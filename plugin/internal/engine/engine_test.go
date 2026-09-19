@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,8 @@ import (
 )
 
 type fakeHost struct {
+	pluginv1.HostServiceClient // optional resource RPCs overridden below for stock-host fallback
+
 	mu                            sync.Mutex
 	values                        map[string][]byte
 	accounts                      map[int64]*pluginv1.ResolveOutboundIdentityResponse
@@ -497,4 +500,11 @@ func TestSlowPersistenceDoesNotBlockHealthOrConfig(t *testing.T) {
 	if n != 0 {
 		t.Fatal("cancelled persistence committed stale ticket")
 	}
+}
+
+func (h *fakeHost) ListResources(context.Context, *pluginv1.ListResourcesRequest, ...grpc.CallOption) (*pluginv1.ListResourcesResponse, error) {
+	return nil, errors.New("unimplemented")
+}
+func (h *fakeHost) ResolveProxy(context.Context, *pluginv1.ResolveProxyRequest, ...grpc.CallOption) (*pluginv1.ResolveProxyResponse, error) {
+	return nil, errors.New("unimplemented")
 }

@@ -45,12 +45,19 @@ func (e *Engine) refreshDirectory() {
 	ctx, cancel := context.WithTimeout(e.ctx, 5*time.Second)
 	res, err := host.ListAccounts(ctx, &pluginv1.ListAccountsRequest{Platform: "openai", AccountType: "oauth"})
 	cancel()
+	ctx, cancel = context.WithTimeout(e.ctx, 5*time.Second)
+	resources, resourceErr := host.ListResources(ctx, &pluginv1.ListResourcesRequest{})
+	cancel()
+	if resourceErr != nil {
+		resources = nil
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
 		return
 	}
 	e.directoryAt = time.Now()
+	e.resources = resources
 	if err != nil || res == nil {
 		e.directory = map[int64]bool{}
 		e.directoryError = "host account directory unavailable"
@@ -195,6 +202,10 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 		candidate, status, err := e.observedProbe(ctx, c, identity, model, rotating, "", k, gen, attempt, "harvest")
 		if err != nil {
 			reason = "harvest_failed"
+			if errors.Is(err, errManagedProxyUnavailable) {
+				reason = "managed_proxy_unavailable"
+				return
+			}
 			if isStopStatus(status) {
 				reason = stopReason(status)
 				return

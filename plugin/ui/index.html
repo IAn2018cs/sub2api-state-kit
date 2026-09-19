@@ -24,10 +24,15 @@
             <div><h2>总开关与动态代理</h2><p class="muted">总开关和账号开关均开启时，该账号才会获取、使用票据。</p></div>
             <label class="switch-label"><input id="enabled" type="checkbox" role="switch"><span>启用 STATE Kit</span></label>
           </div>
-          <label for="harvest-dial-proxy-url">前置代理（可选）</label>
-          <div class="input-action"><input id="harvest-dial-proxy-url" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890"><button id="toggle-front-proxy" type="button" class="secondary" aria-controls="harvest-dial-proxy-url" aria-pressed="false">显示</button></div>
-          <p class="help">本机 → 前置代理 → 动态代理 → 获取 STATE。能直接连接动态代理时留空；此设置只影响采集。支持 HTTP(S) / SOCKS5(H)。</p>
-          <p class="help">可手动填写已有代理的完整地址。当前宿主插件接口不提供「代理管理」列表；容器中的 127.0.0.1 指向容器自身。</p>
+          <label for="harvest-dial-proxy-mode">前置代理</label>
+          <select id="harvest-dial-proxy-mode"><option value="direct">直连动态代理</option><option value="manual">手动填写前置代理</option><option value="managed" id="managed-proxy-option">选择 IP 管理中的代理</option></select>
+          <div id="front-manual" hidden>
+            <label for="harvest-dial-proxy-url">前置代理地址</label>
+            <div class="input-action"><input id="harvest-dial-proxy-url" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890"><button id="toggle-front-proxy" type="button" class="secondary" aria-controls="harvest-dial-proxy-url" aria-pressed="false">显示</button></div>
+          </div>
+          <div id="front-managed" hidden><label for="harvest-dial-proxy-id">已配置的代理</label><select id="harvest-dial-proxy-id"><option value="">请选择代理</option></select></div>
+          <p id="proxy-discovery" class="help">正在读取宿主代理列表…</p>
+          <p class="help">直连：本机 → 动态代理。使用前置代理：本机 → 前置代理 → 动态代理。只影响 STATE 采集，普通请求仍走账号原业务代理。容器中的 127.0.0.1 指向容器自身。</p>
           <label for="dynamic-proxy-url" style="margin-top:16px">动态代理地址</label>
           <div class="input-action"><input id="dynamic-proxy-url" type="password" autocomplete="off" spellcheck="false" placeholder="填写动态代理地址"><button id="toggle-proxy" type="button" class="secondary" aria-controls="dynamic-proxy-url" aria-pressed="false">显示</button></div>
           <p class="help">支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H。地址中的 <code>{random}</code> 或 <code>{sid}</code> 在每次尝试时替换为随机会话值。请填写自己的代理，不在此处填写账号 Token。</p>
@@ -37,10 +42,10 @@
         </section>
 
         <section class="card">
-          <div class="section-heading"><div><h2>参与的账号</h2><p class="muted">按账号 ID 添加。新添加的账号默认关闭，正常账号无需添加。</p></div><span id="account-count" class="count">0 个账号</span></div>
+          <div class="section-heading"><div><h2>参与的账号</h2><p class="muted">按名称识别、按 ID 添加。新添加的账号默认关闭，正常账号无需添加。</p></div><span id="account-count" class="count">0 个账号</span></div>
           <div class="add-account"><div><label for="new-account-id">账号 ID</label><input id="new-account-id" type="text" inputmode="numeric" list="detected-accounts" autocomplete="off" placeholder="输入 ID 或选择已发现账号"><datalist id="detected-accounts"></datalist></div><button id="add-account" type="button" class="secondary">添加账号</button></div>
-          <p id="account-discovery" class="help">宿主只提供账号 ID；账号名称请在 Sub2API 账号页核对。</p>
-          <div class="table-wrap"><table class="accounts-table"><thead><tr><th scope="col">账号 ID</th><th scope="col">开关</th><th scope="col">套餐 / 票据</th><th scope="col">模型</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="accounts-body"></tbody></table></div>
+          <p id="account-discovery" class="help">正在读取账号名称…</p>
+          <div class="table-wrap"><table class="accounts-table"><thead><tr><th scope="col">账号名称 / ID</th><th scope="col">开关</th><th scope="col">套餐 / 票据</th><th scope="col">模型</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="accounts-body"></tbody></table></div>
           <p id="accounts-empty" class="empty">尚未添加账号。添加后选择套餐、填写模型，再手动开启。</p>
           <p class="help">Pro 对应 292，Team 对应 332。模型名称须与请求一致，多个模型用英文逗号分隔。</p>
         </section>

@@ -15,7 +15,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugin"
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 PLUGIN_ID = "io.github.wangyunjeff.sub2api-state-kit"
 KEY_ID = "state-kit-release-v1"
 PLATFORMS = ("linux-amd64", "linux-arm64", "darwin-arm64")
@@ -72,7 +72,7 @@ def verify(package: Path, public: Path, openssl: str):
 def source_archive(destination: Path):
     # Explicit source-file allowlist; no .git, builds, databases, env files or credentials.
     files = {}
-    allowed = {".go", ".mod", ".sum", ".proto", ".json", ".md", ".html", ".js", ".cjs", ".css", ".py", ".txt", ".yaml"}
+    allowed = {".go", ".mod", ".sum", ".proto", ".json", ".md", ".html", ".js", ".cjs", ".css", ".py", ".txt", ".yaml", ".patch"}
     for path in sorted(PLUGIN.rglob("*")):
         rel = path.relative_to(ROOT)
         if path.is_symlink() or not path.is_file() or path.suffix not in allowed:
@@ -82,7 +82,7 @@ def source_archive(destination: Path):
         if path.name.startswith(".") or path.name.endswith(".log"):
             continue
         files[str(rel)] = path.read_bytes()
-    for relative in ("LICENSE", "NOTICE", "scripts/package_plugin.py", "docs/plugin.md", "docs/plugin-validation.md"):
+    for relative in ("LICENSE", "NOTICE", "scripts/package_plugin.py", "docs/plugin.md", "docs/plugin-validation.md", "docs/plugin-host-directory.md", "scripts/prepare_plugin_host.py"):
         path = ROOT / relative
         if path.exists():
             files[relative] = path.read_bytes()

@@ -14,12 +14,14 @@ import (
 )
 
 const PluginID = "io.github.wangyunjeff.sub2api-state-kit"
-const Version = "0.3.1"
+const Version = "0.3.2"
 const StateHeader = "x-codex-turn-state"
 const namespace = "state-kit-v1"
 
 // Config contains no OAuth credentials. The host owns credential refresh.
 type Config struct {
+	HarvestDialProxyMode   string          `json:"harvest_dial_proxy_mode"`
+	HarvestDialProxyID     int64           `json:"harvest_dial_proxy_id"`
 	HarvestDialProxyURL    string          `json:"harvest_dial_proxy_url"`
 	ObserveExitIP          bool            `json:"observe_exit_ip"`
 	Enabled                bool            `json:"enabled"`
@@ -64,6 +66,24 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	c.DynamicProxyURL = strings.TrimSpace(c.DynamicProxyURL)
 	c.HarvestDialProxyURL = strings.TrimSpace(c.HarvestDialProxyURL)
+	c.HarvestDialProxyMode = frontProxyMode(c)
+	switch c.HarvestDialProxyMode {
+	case "direct":
+		c.HarvestDialProxyURL = ""
+		c.HarvestDialProxyID = 0
+	case "manual":
+		c.HarvestDialProxyID = 0
+		if c.HarvestDialProxyURL == "" {
+			return c, errors.New("manual front proxy URL is required")
+		}
+	case "managed":
+		c.HarvestDialProxyURL = ""
+		if c.HarvestDialProxyID <= 0 {
+			return c, errors.New("managed front proxy ID must be positive")
+		}
+	default:
+		return c, errors.New("invalid harvest_dial_proxy_mode")
+	}
 	if err := validateProxy(c.HarvestDialProxyURL); err != nil {
 		return c, errors.New("invalid harvest_dial_proxy_url")
 	}
@@ -172,7 +192,9 @@ func digest(parts ...string) string {
 }
 func configFingerprint(c Config, a AccountConfig, model string) string {
 	dynamicRoute := c.DynamicProxyURL
-	if c.HarvestDialProxyURL != "" {
+	if frontProxyMode(c) == "managed" {
+		dynamicRoute = digest("managed-v1", dynamicRoute, strconv.FormatInt(c.HarvestDialProxyID, 10))
+	} else if frontProxyMode(c) == "manual" {
 		dynamicRoute = digest("chained-v1", dynamicRoute, c.HarvestDialProxyURL)
 	}
 	return digest("v1", dynamicRoute, a.Plan, model, jsonText(struct {
@@ -199,4 +221,15 @@ func validState(s string, n int) bool {
 		}
 	}
 	return true
+}
+
+// Configs created before 0.3.2 use an empty URL for direct and a URL for manual.
+func frontProxyMode(c Config) string {
+	if c.HarvestDialProxyMode != "" {
+		return c.HarvestDialProxyMode
+	}
+	if c.HarvestDialProxyURL != "" {
+		return "manual"
+	}
+	return "direct"
 }

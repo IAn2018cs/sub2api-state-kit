@@ -16,6 +16,8 @@ import (
 
 const maxActivityEvents = 200
 
+var errManagedProxyUnavailable = errors.New("managed proxy unavailable")
+
 // Deliberately no free-form error, URL, headers, body, credential or ticket.
 type activityEvent struct {
 	ID          uint64 `json:"id"`
@@ -97,7 +99,12 @@ func detectExitIP(ctx context.Context, client *http.Client, endpoint string) (st
 func (e *Engine) observedProbe(ctx context.Context, c Config, identity *pluginv1.ResolveOutboundIdentityResponse, model, route, state, k string, gen uint64, attempt int, phase string) (string, int, error) {
 	outer := ""
 	if phase == "harvest" {
-		outer = c.HarvestDialProxyURL
+		var err error
+		outer, err = e.resolveFrontProxy(ctx, c)
+		if err != nil {
+			e.activity(k, gen, activityEvent{AccountID: identity.AccountId, Model: model, Attempt: attempt, Phase: phase, Result: "managed_proxy_unavailable", Chained: true})
+			return "", 0, err
+		}
 	}
 	event := activityEvent{AccountID: identity.AccountId, Model: model, Attempt: attempt, Phase: phase, Result: "started", Chained: outer != ""}
 	e.activity(k, gen, event)
@@ -149,6 +156,9 @@ func transportCode(err error) string {
 		return "transport_timeout"
 	}
 	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "managed proxy") {
+		return "managed_proxy_unavailable"
+	}
 	if strings.Contains(text, "authentication failed") || strings.Contains(text, "proxy authentication required") {
 		return "proxy_auth_failed"
 	}
@@ -159,4 +169,31 @@ func transportCode(err error) string {
 		return "transport_tls_failed"
 	}
 	return "transport_failed"
+}
+
+// Resolve at every harvest, never cache credentials or silently fall back to direct.
+// Validation and ordinary traffic continue through the account's business route.
+func (e *Engine) resolveFrontProxy(ctx context.Context, c Config) (string, error) {
+	switch frontProxyMode(c) {
+	case "direct":
+		return "", nil
+	case "manual":
+		return c.HarvestDialProxyURL, nil
+	case "managed":
+		e.mu.Lock()
+		host := e.host
+		e.mu.Unlock()
+		if host == nil {
+			return "", errManagedProxyUnavailable
+		}
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		res, err := host.ResolveProxy(ctx, &pluginv1.ResolveProxyRequest{ProxyId: c.HarvestDialProxyID})
+		if err != nil || res == nil || !res.Found || res.ProxyUrl == "" || strings.ContainsAny(res.ProxyUrl, "{}") || validateProxy(res.ProxyUrl) != nil {
+			return "", errManagedProxyUnavailable
+		}
+		return res.ProxyUrl, nil
+	default:
+		return "", errors.New("invalid front proxy mode")
+	}
 }

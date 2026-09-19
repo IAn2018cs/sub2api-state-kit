@@ -40,7 +40,7 @@ test('validates bounds, renewal horizon, duplicate accounts and model allowlist'
 });
 
 test('status tolerates pre-initialization, de-duplicates safe IDs, never labels unknown state as raw text', () => {
-  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, account_ids: [], tickets: [], events: [], message: '' });
+  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, resources_ready: false, accounts: [], proxies: [], account_ids: [], tickets: [], events: [], message: '' });
   const status = ui.parseStatus({ status_json: JSON.stringify({ host_ready: true, account_ids: [8, 2, 8, null, -1, '9', '9007199254740992'], tickets: [] }) });
   assert.deepEqual(status.account_ids, [2, 8, 9]);
   assert.deepEqual(ui.stateLabel('raw-sensitive-ticket-content'), ['未知状态', 'warning']);
@@ -146,6 +146,7 @@ test('front proxy settings validate, save and preserve unsaved edits during log 
   assert.throws(() => ui.validateConfig({ ...config, harvest_dial_proxy_url: 'http://user-{sid}@proxy.test' }), /占位符/);
   assert.throws(() => ui.validateConfig({ ...config, harvest_dial_proxy_url: 'file:///secret' }), /HTTP/);
   const h = uiHarness(); await settle();
+  h.get('harvest-dial-proxy-mode').value = 'manual';
   h.get('harvest-dial-proxy-url').value = config.harvest_dial_proxy_url;
   h.get('observe-exit-ip').checked = true;
   await h.get('config-form').fire('input');
@@ -168,5 +169,40 @@ test('activity does not render arbitrary model, IP, phase or error text', async 
  await h.runtime.refreshStatus();
  function text(n){return String(n.textContent)+n.children.map(text).join('');}
  assert.equal(text(h.get('activity-body')).includes('SECRET'),false);
+ h.runtime.stop();
+});
+
+
+test('legacy config infers direct or manual mode', () => {
+ assert.equal(ui.normalizeConfig({}).harvest_dial_proxy_mode, 'direct');
+ assert.equal(ui.normalizeConfig({harvest_dial_proxy_url:'http://front.example:8080'}).harvest_dial_proxy_mode, 'manual');
+ assert.throws(() => ui.validateConfig(configured({harvest_dial_proxy_mode:'managed'})), /请选择 IP/);
+});
+test('names and managed proxies render safely and refresh preserves unsaved selection and models', async () => {
+ const h=uiHarness(); await settle();
+ h.get('harvest-dial-proxy-mode').value='managed'; await h.get('harvest-dial-proxy-mode').fire('change');
+ h.get('harvest-dial-proxy-id').value='3';
+ const modelInput=h.get('accounts-body').children[0].children[3].children[0];
+ modelInput.value='gpt-unsaved'; await modelInput.fire('input');
+ h.setStatus({host_ready:true,resources_ready:true,account_ids:[7],accounts:[{id:7,name:'Mail <img onerror=bad>'}],proxies:[{id:3,name:'Front',protocol:'http',host:'front.example',port:8080}],tickets:[]});
+ await h.runtime.refreshStatus();
+ assert.match(h.get('accounts-body').children[0].children[0].textContent,/Mail.*ID 7/);
+ assert.equal(h.get('accounts-body').children[0].children[0].children.length,0);
+ assert.equal(h.get('accounts-body').children[0].children[3].children[0],modelInput);
+ assert.equal(modelInput.value,'gpt-unsaved');
+ assert.equal(h.get('harvest-dial-proxy-id').value,'3');
+ assert.equal(h.get('managed-proxy-option').disabled,false);
+ assert.equal(h.get('front-managed').hidden,false);
+ await h.get('save-config').click();
+ assert.equal(h.calls.save[0].harvest_dial_proxy_mode,'managed');
+ assert.equal(h.calls.save[0].harvest_dial_proxy_id,3);
+ assert.equal(h.calls.save[0].harvest_dial_proxy_url,'');
+ assert.equal(h.calls.save[0].accounts[0].models[0],'gpt-unsaved');
+ h.setStatus({host_ready:true,resources_ready:false,account_ids:[7]});await h.runtime.refreshStatus();
+ assert.equal(h.get('managed-proxy-option').disabled,true);
+ assert.equal(h.get('harvest-dial-proxy-id').value,'3');
+ h.get('harvest-dial-proxy-mode').value='direct';await h.get('save-config').click();
+ assert.equal(h.calls.save[1].harvest_dial_proxy_id,0);
+ assert.equal(h.calls.save[1].harvest_dial_proxy_url,'');
  h.runtime.stop();
 });

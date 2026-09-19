@@ -31,6 +31,9 @@ service HostService {
   // resolve the outbound identity (credentials/headers/proxy) the host would
   // attach to a live request. The host restricts both calls to accounts the
   // requesting plugin's capability already covers.
+  // Optional resource catalog; metadata only. Proxy credentials are resolved on demand.
+  rpc ListResources(ListResourcesRequest) returns (ListResourcesResponse);
+  rpc ResolveProxy(ResolveProxyRequest) returns (ResolveProxyResponse);
   rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
   rpc ResolveOutboundIdentity(ResolveOutboundIdentityRequest) returns (ResolveOutboundIdentityResponse);
 }
@@ -222,3 +225,10 @@ message ResolveOutboundIdentityResponse {
   string token = 6;
   map<string, HeaderValues> headers = 7;
 }
+
+message ListResourcesRequest {}
+message AccountSummary { int64 id = 1; string name = 2; }
+message ProxySummary { int64 id = 1; string name = 2; string protocol = 3; string host = 4; int32 port = 5; }
+message ListResourcesResponse { repeated AccountSummary accounts = 1; repeated ProxySummary proxies = 2; }
+message ResolveProxyRequest { int64 proxy_id = 1; }
+message ResolveProxyResponse { bool found = 1; string proxy_url = 2; }

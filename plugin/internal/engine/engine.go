@@ -33,6 +33,7 @@ type Engine struct {
 	host             pluginv1.HostServiceClient
 	hostConn         *grpc.ClientConn
 	hostReady        bool
+	resources        *pluginv1.ListResourcesResponse
 	directory        map[int64]bool
 	directoryAt      time.Time
 	directoryError   string
@@ -83,11 +84,14 @@ type statusTicket struct {
 	Attempts         int    `json:"attempts"`
 }
 type statusSnapshot struct {
-	Events     []activityEvent `json:"events"`
-	HostReady  bool            `json:"host_ready"`
-	AccountIDs []int64         `json:"account_ids"`
-	Tickets    []statusTicket  `json:"tickets"`
-	Message    string          `json:"message"`
+	ResourcesReady bool                       `json:"resources_ready"`
+	Accounts       []*pluginv1.AccountSummary `json:"accounts"`
+	Proxies        []*pluginv1.ProxySummary   `json:"proxies"`
+	Events         []activityEvent            `json:"events"`
+	HostReady      bool                       `json:"host_ready"`
+	AccountIDs     []int64                    `json:"account_ids"`
+	Tickets        []statusTicket             `json:"tickets"`
+	Message        string                     `json:"message"`
 }
 
 func New() *Engine {
@@ -234,6 +238,20 @@ func (e *Engine) TestConfig(_ context.Context, r *pluginv1.TestConfigRequest) (*
 		return result, nil
 	}
 	if c.Enabled {
+		if frontProxyMode(c) == "managed" {
+			found := false
+			if e.resources != nil {
+				for _, p := range e.resources.Proxies {
+					if p.Id == c.HarvestDialProxyID {
+						found = true
+					}
+				}
+			}
+			if !found {
+				result.Message = "选中的前置代理不可用，请检查 IP 管理或宿主适配"
+				return result, nil
+			}
+		}
 		for _, a := range c.Accounts {
 			if a.Enabled && !e.directory[a.AccountID] {
 				result.Message = "an enabled account is not in the host account directory"
@@ -364,6 +382,11 @@ func (e *Engine) notify() {
 func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 	s := statusSnapshot{HostReady: e.hostReady, AccountIDs: []int64{}, Tickets: []statusTicket{}, Message: "STATE disabled; requests use the account business proxy"}
 	s.Events = append([]activityEvent{}, e.events...)
+	if e.resources != nil {
+		s.ResourcesReady = true
+		s.Accounts = e.resources.Accounts
+		s.Proxies = e.resources.Proxies
+	}
 	for id := range e.directory {
 		s.AccountIDs = append(s.AccountIDs, id)
 	}

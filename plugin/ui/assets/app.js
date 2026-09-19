@@ -5,7 +5,7 @@
   else api.start(global);
 })(typeof window === 'object' ? window : null, function () {
   'use strict';
-  const DEFAULT_CONFIG = Object.freeze({ enabled: false, dynamic_proxy_url: '', harvest_dial_proxy_url: '', observe_exit_ip: false, ttl_minutes: 60,
+  const DEFAULT_CONFIG = Object.freeze({ enabled: false, dynamic_proxy_url: '', harvest_dial_proxy_url: '', harvest_dial_proxy_mode: 'direct', harvest_dial_proxy_id: 0, observe_exit_ip: false, ttl_minutes: 60,
     refresh_before_minutes: 10, max_attempts: 8, attempt_interval_seconds: 10, cooldown_seconds: 300 });
   const NUMBERS = Object.freeze({ ttl_minutes: [1, 60, '票据有效期'], refresh_before_minutes: [0, 59, '提前续期'],
     max_attempts: [1, 32, '每轮最多尝试'], attempt_interval_seconds: [1, 300, '尝试间隔'], cooldown_seconds: [30, 3600, '失败后冷却'] });
@@ -14,7 +14,7 @@
     ready: ['可用', 'success'], renewing: ['正在续期', ''], cooldown: ['冷却中', 'warning'],
     expired: ['已过期', 'warning'], error: ['获取失败', 'error'] });
   const MODEL_PATTERN = /^gpt-[A-Za-z0-9][A-Za-z0-9._-]{0,94}$/;
-  const ERRORS = Object.freeze({ proxy_auth_failed:'代理用户名或密码验证失败', front_proxy_failed:'前置代理连接或 CONNECT 被拒绝', transport_timeout:'代理连接或请求超时', transport_tls_failed:'TLS 连接或证书验证失败', attempts_exhausted: '本轮尝试已用完', identity_unavailable: '暂时无法取得账号授权或业务代理',
+  const ERRORS = Object.freeze({ managed_proxy_unavailable:'选中的前置代理不可用，请检查 IP 管理或宿主适配',  proxy_auth_failed:'代理用户名或密码验证失败', front_proxy_failed:'前置代理连接或 CONNECT 被拒绝', transport_timeout:'代理连接或请求超时', transport_tls_failed:'TLS 连接或证书验证失败', attempts_exhausted: '本轮尝试已用完', identity_unavailable: '暂时无法取得账号授权或业务代理',
     invalid_dynamic_proxy: '动态代理配置无效', harvest_failed: '动态代理获取票据未成功', unexpected_state_length: '票据长度与所选套餐不符',
     identity_changed: '账号授权信息发生变化', fixed_proxy_validation_failed: '票据未通过原业务代理验证',
     ticket_persistence_failed: '票据保存失败', upstream_unauthorized: '上游拒绝授权（401）', upstream_forbidden: '上游拒绝访问（403）',
@@ -36,6 +36,7 @@
     Object.keys(DEFAULT_CONFIG).forEach(function (key) {
       if (source[key] !== undefined) config[key] = source[key];
     });
+    if (!source.harvest_dial_proxy_mode) config.harvest_dial_proxy_mode = config.harvest_dial_proxy_url ? 'manual' : 'direct';
     config.accounts = Array.isArray(source.accounts) ? source.accounts.map(function (account) {
       return { account_id: account.account_id, enabled: account.enabled === true,
         plan: account.plan || 'pro', models: Array.isArray(account.models) ? account.models.slice() : ['gpt-6-astra'] };
@@ -43,6 +44,10 @@
     return config;
   }
   function validateConfig(config) {
+    const mode = config.harvest_dial_proxy_mode || (config.harvest_dial_proxy_url ? 'manual' : 'direct');
+    if (!['direct', 'manual', 'managed'].includes(mode)) throw new Error('请选择前置代理方式。');
+    if (mode === 'manual' && !config.harvest_dial_proxy_url) throw new Error('请填写前置代理地址。');
+    if (mode === 'managed' && accountID(config.harvest_dial_proxy_id) === null) throw new Error('请选择 IP 管理中的代理。');
     if (typeof config.enabled !== 'boolean') throw new Error('总开关格式不正确。');
     if (typeof config.observe_exit_ip !== 'boolean') throw new Error('出口 IP 检测开关格式不正确。');
     if (typeof config.harvest_dial_proxy_url !== 'string') throw new Error('前置代理地址格式不正确。');
@@ -106,6 +111,9 @@
     }
     if (!status || typeof status !== 'object' || Array.isArray(status)) status = {};
     return { host_ready: status.host_ready === true,
+      resources_ready: status.resources_ready === true,
+      accounts: Array.isArray(status.accounts) ? status.accounts.filter(a => a && accountID(a.id) !== null).map(a => ({id: accountID(a.id), name: typeof a.name === 'string' ? a.name.slice(0, 256) : ''})) : [],
+      proxies: Array.isArray(status.proxies) ? status.proxies.filter(p => p && accountID(p.id) !== null).map(p => ({id:accountID(p.id), name:typeof p.name === 'string' ? p.name.slice(0,256) : '', protocol:typeof p.protocol === 'string' ? p.protocol : '', host:typeof p.host === 'string' ? p.host : '', port:Number.isInteger(p.port) ? p.port : 0})) : [],
       account_ids: Array.isArray(status.account_ids) ? Array.from(new Set(status.account_ids.map(accountID).filter(function (id) { return id !== null; }))).sort(function (a, b) { return a - b; }) : [],
       tickets: Array.isArray(status.tickets) ? status.tickets.filter(function (ticket) { return ticket && accountID(ticket.account_id) !== null; }).slice(0, 4096) : [],
       events: Array.isArray(status.events) ? status.events.slice(-200) : [],
@@ -130,6 +138,31 @@
     let pollTimer;
     let resizeObserver;
     let accounts = [];
+    let accountNames = new Map();
+    let accountCells = [];
+    function accountLabel(id) { return accountNames.has(id) ? accountNames.get(id) + ' · ID ' + id : 'ID ' + id; }
+    function updateFrontMode() {
+      byID('front-manual').hidden = byID('harvest-dial-proxy-mode').value !== 'manual';
+      byID('front-managed').hidden = byID('harvest-dial-proxy-mode').value !== 'managed';
+    }
+    function renderResources(status) {
+      accountNames = new Map(status.accounts.map(a => [a.id, a.name || '未命名账号']));
+      accountCells.forEach(cell => { cell.node.textContent = accountLabel(cell.id); });
+      const select = byID('harvest-dial-proxy-id');
+      const selected = select.value;
+      select.replaceChildren();
+      const empty = element('option', '请选择代理'); empty.value = ''; select.appendChild(empty);
+      status.proxies.forEach(p => {
+        const option = element('option', (p.name || '未命名代理') + ' · ID ' + p.id + ' · ' + p.protocol + '://' + p.host + ':' + p.port);
+        option.value = p.id; select.appendChild(option);
+      });
+      if (selected && !status.proxies.some(p => String(p.id) === selected)) {
+        const unavailable = element('option', 'ID ' + selected + '（暂不可用，请检查 IP 管理）'); unavailable.value = selected; select.appendChild(unavailable);
+      }
+      select.value = selected;
+      byID('managed-proxy-option').disabled = !status.resources_ready;
+      byID('proxy-discovery').textContent = status.resources_ready ? '从 IP 管理读取 ' + status.proxies.length + ' 个可用代理；只保存所选 ID，采集时读取最新地址。列表每 30 秒更新。' : '当前宿主未提供资源目录：直连和手动填写可用；选择已有代理及显示账号名称需要安装宿主适配补丁。';
+    }
     const numberIDs = { ttl_minutes: 'ttl-minutes', refresh_before_minutes: 'refresh-before-minutes',
       max_attempts: 'max-attempts', attempt_interval_seconds: 'attempt-interval-seconds', cooldown_seconds: 'cooldown-seconds' };
     function element(tag, text, className) {
@@ -158,9 +191,11 @@
     function renderAccounts() {
       const body = byID('accounts-body');
       body.replaceChildren();
+      accountCells = [];
       accounts.forEach(function (account, index) {
         const row = element('tr');
-        row.appendChild(element('td', account.account_id, 'account-id'));
+        const label = element('td', accountLabel(account.account_id), 'account-id');
+        accountCells.push({id:account.account_id, node:label}); row.appendChild(label);
         const enabledCell = element('td');
         const enabled = element('input');
         enabled.type = 'checkbox'; enabled.checked = account.enabled === true;
@@ -193,6 +228,12 @@
       byID('enabled').checked = config.enabled === true;
       byID('dynamic-proxy-url').value = config.dynamic_proxy_url;
       byID('harvest-dial-proxy-url').value = config.harvest_dial_proxy_url;
+      byID('harvest-dial-proxy-mode').value = config.harvest_dial_proxy_mode;
+      const selectedProxy = byID('harvest-dial-proxy-id');
+      selectedProxy.replaceChildren();
+      const selectedOption = element('option', config.harvest_dial_proxy_id ? 'ID ' + config.harvest_dial_proxy_id : '请选择代理');
+      selectedOption.value = config.harvest_dial_proxy_id || ''; selectedProxy.appendChild(selectedOption); selectedProxy.value = selectedOption.value;
+      updateFrontMode();
       byID('observe-exit-ip').checked = config.observe_exit_ip;
       Object.keys(numberIDs).forEach(function (key) { byID(numberIDs[key]).value = config[key]; });
       accounts = config.accounts;
@@ -201,7 +242,7 @@
       updateSaveState();
     }
     function formConfig() {
-      const config = { enabled: byID('enabled').checked, dynamic_proxy_url: byID('dynamic-proxy-url').value.trim(), harvest_dial_proxy_url: byID('harvest-dial-proxy-url').value.trim(), observe_exit_ip: byID('observe-exit-ip').checked };
+      const config = { enabled: byID('enabled').checked, dynamic_proxy_url: byID('dynamic-proxy-url').value.trim(), harvest_dial_proxy_mode: byID('harvest-dial-proxy-mode').value, harvest_dial_proxy_id: byID('harvest-dial-proxy-mode').value === 'managed' ? Number(byID('harvest-dial-proxy-id').value) : 0, harvest_dial_proxy_url: byID('harvest-dial-proxy-mode').value === 'manual' ? byID('harvest-dial-proxy-url').value.trim() : '', observe_exit_ip: byID('observe-exit-ip').checked };
       Object.keys(numberIDs).forEach(function (key) {
         const raw = byID(numberIDs[key]).value.trim();
         config[key] = raw === '' ? NaN : Number(raw);
@@ -212,16 +253,17 @@
       return validateConfig(config);
     }
     function renderStatus(status) {
+      renderResources(status);
       const connection = byID('connection-status');
       connection.textContent = status.host_ready ? '宿主已连接' : '等待宿主初始化';
       connection.className = 'badge ' + (status.host_ready ? 'success' : 'warning');
       byID('status-summary').textContent = status.message || (status.host_ready ? '状态已更新' : '等待宿主提供账号信息；可先保存配置。');
       const options = byID('detected-accounts'); options.replaceChildren();
-      status.account_ids.forEach(function (id) { const option = element('option'); option.value = id; options.appendChild(option); });
-      byID('account-discovery').textContent = status.account_ids.length ? '发现 ' + status.account_ids.length + ' 个账号 ID。宿主不提供账号名称，请在账号页核对。' : '暂未发现账号 ID，也可以手动填写。宿主不会向此页面提供账号 Token。';
+      status.account_ids.forEach(function (id) { const option = element('option', accountLabel(id)); option.setAttribute('label', accountLabel(id)); option.value = id; options.appendChild(option); });
+      byID('account-discovery').textContent = status.account_ids.length ? '发现 ' + status.account_ids.length + ' 个账号。' + (status.resources_ready ? '输入 ID 或按名称选择。' : '宿主未提供名称，请在账号页核对。') : '暂未发现账号 ID，也可以手动填写。宿主不会向此页面提供账号 Token。';
       const body = byID('tickets-body'); body.replaceChildren();
       status.tickets.forEach(function (ticket) {
-        const row = element('tr'); const account = element('td', accountID(ticket.account_id));
+        const row = element('tr'); const account = element('td', accountLabel(accountID(ticket.account_id)));
         const model = typeof ticket.model === 'string' && MODEL_PATTERN.test(ticket.model) ? ticket.model : '未知模型';
         account.appendChild(element('span', model, 'status-model')); row.appendChild(account);
         row.appendChild(element('td', ticket.plan === 'team' ? 'Team · 332' : ticket.plan === 'pro' ? 'Pro · 292' : '—'));
@@ -241,7 +283,7 @@
         if (!entry || accountID(entry.account_id) === null) return;
         const row = element('tr');
         const time = Number.isFinite(Date.parse(entry.time)) ? new Date(entry.time).toLocaleTimeString('zh-CN') : '—';
-        row.appendChild(element('td', time + ' / ' + accountID(entry.account_id)));
+        row.appendChild(element('td', time + ' / ' + accountLabel(accountID(entry.account_id))));
         const phase = { harvest: '动态采集', validate: '业务出口复验', restore: '恢复复验', collection: '采集轮次', watchdog: '异常守护' }[entry.phase] || '—';
         row.appendChild(element('td', phase + (entry.chained ? ' · 前置代理' : '') + (Number.isSafeInteger(entry.attempt) && entry.attempt > 0 ? ' · 第 ' + entry.attempt + ' 次' : '')));
         const ip = typeof entry.exit_ip === 'string' && /^[0-9a-fA-F:.]{2,45}$/.test(entry.exit_ip) ? entry.exit_ip : '—';
@@ -271,6 +313,7 @@
         }
       } finally { statusBusy = false; if (!closed) byID('refresh-status').disabled = false; }
     }
+    byID('harvest-dial-proxy-mode').addEventListener('change', updateFrontMode);
     byID('config-form').addEventListener('input', markDirty);
     byID('config-form').addEventListener('change', markDirty);
     async function saveConfig(event) {

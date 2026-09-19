@@ -14,12 +14,14 @@ import (
 )
 
 const PluginID = "io.github.wangyunjeff.sub2api-state-kit"
-const Version = "0.3.0"
+const Version = "0.3.1"
 const StateHeader = "x-codex-turn-state"
 const namespace = "state-kit-v1"
 
 // Config contains no OAuth credentials. The host owns credential refresh.
 type Config struct {
+	HarvestDialProxyURL    string          `json:"harvest_dial_proxy_url"`
+	ObserveExitIP          bool            `json:"observe_exit_ip"`
 	Enabled                bool            `json:"enabled"`
 	DynamicProxyURL        string          `json:"dynamic_proxy_url"`
 	TTLMinutes             int             `json:"ttl_minutes"`
@@ -61,6 +63,13 @@ func ParseConfig(raw []byte) (Config, error) {
 		return c, errors.New("configuration has trailing JSON")
 	}
 	c.DynamicProxyURL = strings.TrimSpace(c.DynamicProxyURL)
+	c.HarvestDialProxyURL = strings.TrimSpace(c.HarvestDialProxyURL)
+	if err := validateProxy(c.HarvestDialProxyURL); err != nil {
+		return c, errors.New("invalid harvest_dial_proxy_url")
+	}
+	if strings.ContainsAny(c.HarvestDialProxyURL, "{}") {
+		return c, errors.New("harvest_dial_proxy_url cannot contain placeholders")
+	}
 	if c.TTLMinutes < 1 || c.TTLMinutes > 60 {
 		return c, errors.New("ttl_minutes must be 1..60")
 	}
@@ -162,7 +171,11 @@ func digest(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 func configFingerprint(c Config, a AccountConfig, model string) string {
-	return digest("v1", c.DynamicProxyURL, a.Plan, model, jsonText(struct {
+	dynamicRoute := c.DynamicProxyURL
+	if c.HarvestDialProxyURL != "" {
+		dynamicRoute = digest("chained-v1", dynamicRoute, c.HarvestDialProxyURL)
+	}
+	return digest("v1", dynamicRoute, a.Plan, model, jsonText(struct {
 		ID  int64
 		TTL int
 	}{a.AccountID, c.TTLMinutes}))

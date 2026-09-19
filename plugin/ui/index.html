@@ -24,10 +24,16 @@
             <div><h2>总开关与动态代理</h2><p class="muted">总开关和账号开关均开启时，该账号才会获取、使用票据。</p></div>
             <label class="switch-label"><input id="enabled" type="checkbox" role="switch"><span>启用 STATE Kit</span></label>
           </div>
-          <label for="dynamic-proxy-url">动态代理地址</label>
+          <label for="harvest-dial-proxy-url">前置代理（可选）</label>
+          <div class="input-action"><input id="harvest-dial-proxy-url" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890"><button id="toggle-front-proxy" type="button" class="secondary" aria-controls="harvest-dial-proxy-url" aria-pressed="false">显示</button></div>
+          <p class="help">本机 → 前置代理 → 动态代理 → 获取 STATE。能直接连接动态代理时留空；此设置只影响采集。支持 HTTP(S) / SOCKS5(H)。</p>
+          <p class="help">可手动填写已有代理的完整地址。当前宿主插件接口不提供「代理管理」列表；容器中的 127.0.0.1 指向容器自身。</p>
+          <label for="dynamic-proxy-url" style="margin-top:16px">动态代理地址</label>
           <div class="input-action"><input id="dynamic-proxy-url" type="password" autocomplete="off" spellcheck="false" placeholder="填写动态代理地址"><button id="toggle-proxy" type="button" class="secondary" aria-controls="dynamic-proxy-url" aria-pressed="false">显示</button></div>
           <p class="help">支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H。地址中的 <code>{random}</code> 或 <code>{sid}</code> 在每次尝试时替换为随机会话值。请填写自己的代理，不在此处填写账号 Token。</p>
           <p class="help">关闭并保存后停止票据获取与注入；正常请求继续转发。</p>
+          <label class="switch-label" style="margin-top:16px"><input id="observe-exit-ip" type="checkbox">检测出口 IP 并写入运行日志</label>
+          <p class="help">每次采集及复验通过同一代理会话访问 ipify 查询公网出口，只发送 IP 查询，不发送账号授权。另建连接时出口可能变化；查询失败不会阻止采集。</p>
         </section>
 
         <section class="card">
@@ -60,7 +66,13 @@
       <div class="section-heading"><div><h2 id="tickets-title">运行状态</h2><p id="status-summary" class="muted">正在读取状态…</p></div><button id="refresh-status" type="button" class="secondary" disabled>刷新状态</button></div>
       <div class="table-wrap"><table><thead><tr><th scope="col">账号 / 模型</th><th scope="col">套餐</th><th scope="col">状态</th><th scope="col">剩余时间</th><th scope="col">最近情况</th></tr></thead><tbody id="tickets-body"></tbody></table></div>
       <p id="tickets-empty" class="empty">暂无票据状态。</p>
-      <p class="help">每 10 秒只读刷新，不显示票据原文。配置表单中的未保存修改会保留。</p>
+      <p class="help">每 5 秒只读刷新，不显示票据原文。配置表单中的未保存修改会保留。</p>
+    </section>
+    <section class="card" aria-labelledby="activity-title">
+      <div class="section-heading"><div><h2 id="activity-title">运行日志</h2><p class="muted">显示本次插件进程最近 200 条记录，每 5 秒刷新。</p></div></div>
+      <div class="table-wrap activity-log"><table><thead><tr><th>时间 / 账号</th><th>阶段</th><th>检测出口 IP</th><th>结果</th></tr></thead><tbody id="activity-body"></tbody></table></div>
+      <p id="activity-empty" class="empty">暂无日志。启用账号并保存后开始采集。</p>
+      <p class="help">日志保留 HTTP 状态、实际返回模型、票据长度和耗时；不显示密码、账号 Token 或 STATE 原文。IP 是同一代理会话的独立检测结果，不保证每条模型请求使用完全相同的出口。</p>
     </section>
   </main>
 </body>

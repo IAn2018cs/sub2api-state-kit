@@ -127,6 +127,13 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 		if !e.activeLocked(k, gen) {
 			return
 		}
+		event := activityEvent{AccountID: a.AccountID, Model: model, Phase: "collection", Result: reason}
+		if success {
+			event.Result = "ready"
+		} else if ctx.Err() != nil {
+			event.Result = "cancelled"
+		}
+		e.eventLocked(event)
 		delete(e.jobs, k)
 		r := e.records[k]
 		if r == nil {
@@ -185,7 +192,7 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 			return
 		}
 		captured := time.Now()
-		candidate, status, err := e.probe(ctx, identity, model, rotating, "")
+		candidate, status, err := e.observedProbe(ctx, c, identity, model, rotating, "", k, gen, attempt, "harvest")
 		if err != nil {
 			reason = "harvest_failed"
 			if isStopStatus(status) {
@@ -196,6 +203,7 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 		}
 		if !validState(candidate, targetLength(a.Plan)) {
 			reason = "unexpected_state_length"
+			e.activity(k, gen, activityEvent{AccountID: a.AccountID, Model: model, Attempt: attempt, Phase: "harvest", Result: reason, StateBytes: len(candidate)})
 			continue
 		}
 		// Resolve fresh credentials again, and validate using the host's current
@@ -209,7 +217,7 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 			reason = "identity_changed"
 			continue
 		}
-		returned, status, err := e.probe(ctx, fixed, model, fixed.ProxyUrl, candidate)
+		returned, status, err := e.observedProbe(ctx, c, fixed, model, fixed.ProxyUrl, candidate, k, gen, attempt, "validate")
 		if err != nil || validState(returned, 312) {
 			reason = "fixed_proxy_validation_failed"
 			if isStopStatus(status) {
@@ -285,7 +293,7 @@ func (e *Engine) restore(ctx context.Context, host pluginv1.HostServiceClient, c
 	if json.Unmarshal(r.Value, &t) != nil || !validTicket(&t, c, a, model, time.Now()) || t.Version == revoked || t.FixedFingerprint != proxyFingerprint(identity.ProxyUrl) || t.IdentityFingerprint != stableIdentity(identity) {
 		return false, 0
 	}
-	returned, status, err := e.probe(ctx, identity, model, identity.ProxyUrl, t.State)
+	returned, status, err := e.observedProbe(ctx, c, identity, model, identity.ProxyUrl, t.State, k, gen, 0, "restore")
 	if err != nil || validState(returned, 312) {
 		return false, status
 	}
@@ -321,7 +329,7 @@ func (e *Engine) commit(ctx context.Context, host pluginv1.HostServiceClient, c 
 	return true
 }
 
-func (e *Engine) probe(ctx context.Context, identity *pluginv1.ResolveOutboundIdentityResponse, model, proxyURL, state string) (string, int, error) {
+func (e *Engine) probeWithClient(ctx context.Context, identity *pluginv1.ResolveOutboundIdentityResponse, model, state string, client *http.Client, detail *probeDetail) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	payload := map[string]any{"model": model, "store": false, "stream": true, "instructions": "Reply with exactly: pong", "input": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": "ping"}}}}}
@@ -352,18 +360,16 @@ func (e *Engine) probe(ctx context.Context, identity *pluginv1.ResolveOutboundId
 		req.Header.Set(StateHeader, state)
 	}
 	req.Close = true
-	client, err := freshProbeClient(proxyURL)
-	if err != nil {
-		return "", 0, errors.New("probe transport unavailable")
-	}
-	defer client.CloseIdleConnections()
 	response, err := client.Do(req)
 	if err != nil {
+		detail.Result = transportCode(err)
 		return "", 0, errors.New("probe transport failed")
 	}
 	defer response.Body.Close()
 	status := response.StatusCode
+	detail.StateBytes = len(strings.TrimSpace(response.Header.Get(StateHeader)))
 	if status != http.StatusOK {
+		detail.Result = "upstream_rejected"
 		return "", status, errors.New("probe request rejected")
 	}
 	observer := newCompletionObserver(model)
@@ -387,7 +393,13 @@ func (e *Engine) probe(ctx context.Context, identity *pluginv1.ResolveOutboundId
 	}
 	observer.Finish()
 	complete, matches := observer.Result()
+	detail.ActualModel = observer.actual
+	detail.Result = "model_matched"
 	if !complete || !matches {
+		detail.Result = "model_mismatch"
+		if !complete {
+			detail.Result = "incomplete_response"
+		}
 		return "", status, errors.New("probe did not complete with requested model")
 	}
 	return strings.TrimSpace(response.Header.Get(StateHeader)), status, nil

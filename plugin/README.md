@@ -1,11 +1,11 @@
 # STATE Kit 独立插件
 
-Sub2API v0.2.7 的开源 OpenAI OAuth transport 插件，提供逐账号 Pro / Team STATE 配置、动态代理采集、固定业务代理复验、续期和响应异常守护。
+Sub2API v0.2.7 的开源 OpenAI OAuth transport 插件，提供逐账号 Pro / Team STATE 配置、可选前置代理、动态代理采集、出口 IP 与运行日志、固定业务代理复验、续期和响应异常守护。
 
 请先阅读 [安装与使用说明](../docs/plugin.md)。配置在「插件管理 → STATE Kit → 配置」，不用修改宿主源码。首次安装需在宿主信任本插件的发布者公钥。
 
 - 插件 ID：`io.github.wangyunjeff.sub2api-state-kit`
-- 插件版本：`0.3.0`
+- 插件版本：`0.3.1`
 - 协议：Sub2API 插件协议 / transport / UI Bridge / HostService v1
 - 宿主源码基线：官方 `v0.2.7`，提交 `aea725f2ea644d5592d0bbb1d63b607efa7e200a`
 - 当前部署范围：单应用实例

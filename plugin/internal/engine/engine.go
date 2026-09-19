@@ -43,6 +43,9 @@ type Engine struct {
 	semaphore        chan struct{}
 	clients          *clientPool
 	probeURL         string
+	exitIPURL        string
+	events           []activityEvent
+	eventSeq         uint64
 	tick             time.Duration
 	warmup           time.Duration
 	activeAfter      time.Time
@@ -80,10 +83,11 @@ type statusTicket struct {
 	Attempts         int    `json:"attempts"`
 }
 type statusSnapshot struct {
-	HostReady  bool           `json:"host_ready"`
-	AccountIDs []int64        `json:"account_ids"`
-	Tickets    []statusTicket `json:"tickets"`
-	Message    string         `json:"message"`
+	Events     []activityEvent `json:"events"`
+	HostReady  bool            `json:"host_ready"`
+	AccountIDs []int64         `json:"account_ids"`
+	Tickets    []statusTicket  `json:"tickets"`
+	Message    string          `json:"message"`
 }
 
 func New() *Engine {
@@ -96,6 +100,7 @@ func newEngine(host pluginv1.HostServiceClient, probeURL string, tick time.Durat
 	ctx, cancel := context.WithCancel(context.Background())
 	gc, gcancel := context.WithCancel(ctx)
 	e := &Engine{config: DefaultConfig(), ctx: ctx, cancel: cancel, generationCtx: gc, generationCancel: gcancel, wake: make(chan struct{}, 1), done: make(chan struct{}), host: host, hostReady: host != nil, directory: map[int64]bool{}, tickets: map[string]*ticket{}, records: map[string]*jobRecord{}, jobs: map[string]uint64{}, revoked: map[string]string{}, semaphore: make(chan struct{}, 4), clients: newClientPool(), probeURL: probeURL, tick: tick, warmup: 5 * time.Second}
+	e.exitIPURL = "https://api.ipify.org?format=json"
 	go e.loop()
 	return e
 }
@@ -320,6 +325,7 @@ func (e *Engine) invalidate(r *receipt, reason string) {
 		e.records[r.Key] = rec
 	}
 	rec.LastError = reason
+	e.eventLocked(activityEvent{AccountID: t.AccountID, Model: t.Model, Phase: "watchdog", Result: reason})
 	host := e.host
 	e.mu.Unlock()
 	e.notify()
@@ -357,6 +363,7 @@ func (e *Engine) notify() {
 }
 func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 	s := statusSnapshot{HostReady: e.hostReady, AccountIDs: []int64{}, Tickets: []statusTicket{}, Message: "STATE disabled; requests use the account business proxy"}
+	s.Events = append([]activityEvent{}, e.events...)
 	for id := range e.directory {
 		s.AccountIDs = append(s.AccountIDs, id)
 	}

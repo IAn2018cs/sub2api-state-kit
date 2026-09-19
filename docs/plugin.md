@@ -2,9 +2,9 @@
 
 插件版使用官方 **Sub2API v0.2.7** 的 `.s2plugin` 接口，不需要覆盖或编译宿主源码。它与本仓库基于 v0.2.6 的增量版、完整部署版是三个可选入口，**选择一种即可**。
 
-- 下载：[插件版 v0.3.0](https://github.com/wangyunjeff/sub2api-state-kit/releases/tag/v0.3.0)
-- 安装文件：`sub2api-state-kit_plugin_v0.3.0.s2plugin`
-- 完整插件源码：`sub2api-state-kit_plugin_v0.3.0_source.zip`，或本仓库的 [`plugin/`](../plugin/)
+- 下载：[插件版 v0.3.1](https://github.com/wangyunjeff/sub2api-state-kit/releases/tag/v0.3.1)
+- 安装文件：`sub2api-state-kit_plugin_v0.3.1.s2plugin`
+- 完整插件源码：`sub2api-state-kit_plugin_v0.3.1_source.zip`，或本仓库的 [`plugin/`](../plugin/)
 - 包含 Linux amd64、Linux arm64、macOS arm64 三个运行时；宿主自动选择对应架构。
 - 官方接口基线：[v0.2.7 / aea725f](https://github.com/Wei-Shaw/sub2api/tree/aea725f2ea644d5592d0bbb1d63b607efa7e200a)。清单兼容范围为 `>=0.2.7 <0.3.0`，实际验证基线为 0.2.7，其他版本仍需测试。
 
@@ -15,6 +15,8 @@
 | 功能 | 插件版行为 |
 | --- | --- |
 | 全局动态池 | 填一次，用于启用账号的后台采集；支持 HTTP(S)、SOCKS5(h) 和会话占位符 |
+| 前置代理 | 可选 HTTP(S) / SOCKS5(H)；仅用于连接动态池，留空保持直连动态池 |
+| 出口与运行日志 | 可选检测公网出口；展示采集、复验、续期和守护的最近 200 条记录 |
 | 账号开关 | 默认全部关闭；只为明确开启的账号和模型采集、注入和守护 |
 | Pro / Team | 手动选择，分别筛选 292 / 332 字节的 STATE |
 | 固定出口复验 | 采集响应模型匹配后，再用该账号原有业务代理携带候选 STATE 复验 |
@@ -45,7 +47,11 @@
 ### 3. 配置需要处理的账号
 
 1. 先在原账号管理里设置账号的固定业务代理。
-2. 打开插件配置，填写全局动态池，例如：
+2. 打开插件配置。若当前机器需要先经过一个代理才能连接动态池，在「前置代理」填完整 URL，例如 `http://127.0.0.1:7890`；能直接连接动态池时留空。支持 HTTP(S)、SOCKS5(H) 和代理认证。连接顺序为 **当前机器 → 前置代理 → 动态代理 → 上游**；这项设置不影响账号的固定业务代理或直连路径。
+
+   官方 0.2.7 的 HostService / UI Bridge 不提供「代理管理」列表，因此本版使用手动填写，不能在插件里按代理名称选择。可以把已有代理的协议、主机、端口、用户名和密码组合成 URL 填入。Docker 内的 `127.0.0.1` 是容器自身；前置代理地址须从容器内可达。
+
+3. 继续填写全局动态池，例如：
 
    ```text
    socks5h://ENCODED_USERNAME-sid-{sid}:ENCODED_PASSWORD@PROXY_HOST:PORT
@@ -53,12 +59,24 @@
 
    用户名和密码中的特殊字符须分别进行 URL 百分号编码。`{sid}` / `{random}` 用于轮换会话；服务商是否更换实际出口，以其行为为准。不要填“获取代理列表”的 HTTP API 地址。
 
-3. 添加对应账号 ID，选择 Pro / Team，填写要保护的目标模型，打开账号开关。
-4. 打开插件内的 STATE 总开关并保存，等待票据状态变为可用，再发送业务请求。
+4. 添加对应账号 ID，选择 Pro / Team，填写要保护的目标模型，打开账号开关。
+5. 按需勾选「检测出口 IP 并写入运行日志」。它会在每次采集、业务出口复验和恢复复验时，通过该次代理会话请求 `https://api.ipify.org?format=json`，只发送 IP 查询，不发送账号授权、STATE 或模型内容。每次查询最多 10 秒，失败后继续模型探测。
+6. 打开插件内的 STATE 总开关并保存，等待票据状态变为可用，再发送业务请求。
 
 不要同时让宿主内置 STATE 功能或其他扩展向同一账号注入票据。插件不会自动搬运旧版的账号配置或已有 STATE。
 
 “测试已保存配置”只检查插件与宿主服务配置状态；它不等于模型恢复成功。是否有可用票据，以票据状态和实际响应模型为准。
+
+## 查看运行日志
+
+配置页底部每 5 秒只读刷新，最多显示当前插件进程的最近 200 条记录。日志包含账号 ID、阶段、尝试次数、检测到的出口 IP、HTTP 状态、实际返回模型、STATE 长度和耗时。密码、完整代理 URL、OAuth Token、STATE 原文和请求内容不会写入这些日志。同样的结构化记录写入插件 stderr，是否保存和轮转由宿主运行环境决定。
+
+- 「动态采集 · 前置代理」：通过两层代理采集候选票据。
+- 「业务出口复验」：使用该账号原来的业务代理（或无代理直连）验证候选票据。
+- 「票据可用」：只有候选票据满足筛选条件并通过业务出口复验后才出现。
+- 「返回模型不匹配」：展示完整响应中的实际模型，继续下一次有界尝试。
+
+**检测出口 IP 是同一代理会话上的独立 IP 查询结果。** 代理商可能按新连接或目的地址轮换出口，所以它不能证明下一条模型请求的精确源 IP。插件没有把代理服务器地址冒充公网出口，检测失败会明确显示，不阻止采集。刷新日志不会触发新探测。
 
 ## 关闭、升级和回退
 
@@ -97,7 +115,7 @@ node --test ui-tests/*.test.cjs
 python3 scripts/package_plugin.py build \
   --private-key /PRIVATE/PATH/publisher.pem --output ./artifacts
 python3 scripts/package_plugin.py verify \
-  --package ./artifacts/sub2api-state-kit_plugin_v0.3.0.s2plugin
+  --package ./artifacts/sub2api-state-kit_plugin_v0.3.1.s2plugin
 ```
 
 测试覆盖范围与实际结果见 [插件验证记录](plugin-validation.md)。安装包不含作者的账号、代理凭据、API Key、数据库、STATE 或签名私钥。

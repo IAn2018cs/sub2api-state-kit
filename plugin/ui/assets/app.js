@@ -5,7 +5,7 @@
   else api.start(global);
 })(typeof window === 'object' ? window : null, function () {
   'use strict';
-  const DEFAULT_CONFIG = Object.freeze({ enabled: false, dynamic_proxy_url: '', ttl_minutes: 60,
+  const DEFAULT_CONFIG = Object.freeze({ enabled: false, dynamic_proxy_url: '', harvest_dial_proxy_url: '', observe_exit_ip: false, ttl_minutes: 60,
     refresh_before_minutes: 10, max_attempts: 8, attempt_interval_seconds: 10, cooldown_seconds: 300 });
   const NUMBERS = Object.freeze({ ttl_minutes: [1, 60, '票据有效期'], refresh_before_minutes: [0, 59, '提前续期'],
     max_attempts: [1, 32, '每轮最多尝试'], attempt_interval_seconds: [1, 300, '尝试间隔'], cooldown_seconds: [30, 3600, '失败后冷却'] });
@@ -14,7 +14,7 @@
     ready: ['可用', 'success'], renewing: ['正在续期', ''], cooldown: ['冷却中', 'warning'],
     expired: ['已过期', 'warning'], error: ['获取失败', 'error'] });
   const MODEL_PATTERN = /^gpt-[A-Za-z0-9][A-Za-z0-9._-]{0,94}$/;
-  const ERRORS = Object.freeze({ attempts_exhausted: '本轮尝试已用完', identity_unavailable: '暂时无法取得账号授权或业务代理',
+  const ERRORS = Object.freeze({ proxy_auth_failed:'代理用户名或密码验证失败', front_proxy_failed:'前置代理连接或 CONNECT 被拒绝', transport_timeout:'代理连接或请求超时', transport_tls_failed:'TLS 连接或证书验证失败', attempts_exhausted: '本轮尝试已用完', identity_unavailable: '暂时无法取得账号授权或业务代理',
     invalid_dynamic_proxy: '动态代理配置无效', harvest_failed: '动态代理获取票据未成功', unexpected_state_length: '票据长度与所选套餐不符',
     identity_changed: '账号授权信息发生变化', fixed_proxy_validation_failed: '票据未通过原业务代理验证',
     ticket_persistence_failed: '票据保存失败', upstream_unauthorized: '上游拒绝授权（401）', upstream_forbidden: '上游拒绝访问（403）',
@@ -44,15 +44,20 @@
   }
   function validateConfig(config) {
     if (typeof config.enabled !== 'boolean') throw new Error('总开关格式不正确。');
-    if (typeof config.dynamic_proxy_url !== 'string') throw new Error('动态代理地址格式不正确。');
-    if (config.dynamic_proxy_url) {
+    if (typeof config.observe_exit_ip !== 'boolean') throw new Error('出口 IP 检测开关格式不正确。');
+    if (typeof config.harvest_dial_proxy_url !== 'string') throw new Error('前置代理地址格式不正确。');
+    if (/[{}]/.test(config.harvest_dial_proxy_url)) throw new Error('前置代理不能使用会话占位符。');
+    for (const proxyValue of [config.dynamic_proxy_url, config.harvest_dial_proxy_url]) {
+    if (typeof proxyValue !== 'string') throw new Error('动态代理地址格式不正确。');
+    if (proxyValue) {
       try {
-        if (config.dynamic_proxy_url.length > 4096 || /[\r\n\t]/.test(config.dynamic_proxy_url)) throw new Error();
-        const expanded = config.dynamic_proxy_url.replace(/\{(?:random|sid)\}/g, '123456');
+        if (proxyValue.length > 4096 || /[\r\n\t]/.test(proxyValue)) throw new Error();
+        const expanded = proxyValue.replace(/\{(?:random|sid)\}/g, '123456');
         if (/[{}]/.test(expanded)) throw new Error();
         const url = new URL(expanded);
         if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol) || !url.hostname || url.search || url.hash || (url.pathname && url.pathname !== '/')) throw new Error();
-      } catch (_) { throw new Error('动态代理须为完整的 HTTP(S) 或 SOCKS5(H) 地址。'); }
+      } catch (_) { throw new Error('代理须为完整的 HTTP(S) 或 SOCKS5(H) 地址。'); }
+    }
     }
     Object.keys(NUMBERS).forEach(function (key) {
       const bounds = NUMBERS[key];
@@ -103,6 +108,7 @@
     return { host_ready: status.host_ready === true,
       account_ids: Array.isArray(status.account_ids) ? Array.from(new Set(status.account_ids.map(accountID).filter(function (id) { return id !== null; }))).sort(function (a, b) { return a - b; }) : [],
       tickets: Array.isArray(status.tickets) ? status.tickets.filter(function (ticket) { return ticket && accountID(ticket.account_id) !== null; }).slice(0, 4096) : [],
+      events: Array.isArray(status.events) ? status.events.slice(-200) : [],
       message: redactError(MESSAGES[status.message] || status.message || result && result.message || '') };
   }
   function remainingText(seconds) {
@@ -186,6 +192,8 @@
       const config = normalizeConfig(input);
       byID('enabled').checked = config.enabled === true;
       byID('dynamic-proxy-url').value = config.dynamic_proxy_url;
+      byID('harvest-dial-proxy-url').value = config.harvest_dial_proxy_url;
+      byID('observe-exit-ip').checked = config.observe_exit_ip;
       Object.keys(numberIDs).forEach(function (key) { byID(numberIDs[key]).value = config[key]; });
       accounts = config.accounts;
       renderAccounts();
@@ -193,7 +201,7 @@
       updateSaveState();
     }
     function formConfig() {
-      const config = { enabled: byID('enabled').checked, dynamic_proxy_url: byID('dynamic-proxy-url').value.trim() };
+      const config = { enabled: byID('enabled').checked, dynamic_proxy_url: byID('dynamic-proxy-url').value.trim(), harvest_dial_proxy_url: byID('harvest-dial-proxy-url').value.trim(), observe_exit_ip: byID('observe-exit-ip').checked };
       Object.keys(numberIDs).forEach(function (key) {
         const raw = byID(numberIDs[key]).value.trim();
         config[key] = raw === '' ? NaN : Number(raw);
@@ -228,6 +236,26 @@
         row.appendChild(detail); body.appendChild(row);
       });
       byID('tickets-empty').hidden = status.tickets.length !== 0;
+      const logs = byID('activity-body'); logs.replaceChildren();
+      status.events.slice().reverse().forEach(function (entry) {
+        if (!entry || accountID(entry.account_id) === null) return;
+        const row = element('tr');
+        const time = Number.isFinite(Date.parse(entry.time)) ? new Date(entry.time).toLocaleTimeString('zh-CN') : '—';
+        row.appendChild(element('td', time + ' / ' + accountID(entry.account_id)));
+        const phase = { harvest: '动态采集', validate: '业务出口复验', restore: '恢复复验', collection: '采集轮次', watchdog: '异常守护' }[entry.phase] || '—';
+        row.appendChild(element('td', phase + (entry.chained ? ' · 前置代理' : '') + (Number.isSafeInteger(entry.attempt) && entry.attempt > 0 ? ' · 第 ' + entry.attempt + ' 次' : '')));
+        const ip = typeof entry.exit_ip === 'string' && /^[0-9a-fA-F:.]{2,45}$/.test(entry.exit_ip) ? entry.exit_ip : '—';
+        row.appendChild(element('td', ip));
+        const result = { started: '开始', ip_observed: '已检测出口', ip_check_failed: '出口检测失败，继续模型探测', model_matched: '返回模型匹配', model_mismatch: '返回模型不匹配', incomplete_response: '响应未完整结束', transport_failed: '代理连接或传输失败', transport_unavailable: '代理配置不可用', ready: '票据可用', cancelled: '已取消' }[entry.result] || errorLabel(entry.result);
+        const cell = element('td', result);
+        const details = [];
+        if (Number.isSafeInteger(entry.http_status) && entry.http_status > 0) details.push('HTTP ' + entry.http_status);
+        if (typeof entry.actual_model === 'string' && MODEL_PATTERN.test(entry.actual_model)) details.push(entry.actual_model);
+        if (Number.isSafeInteger(entry.state_bytes) && entry.state_bytes >= 0) details.push('STATE ' + entry.state_bytes + ' 字节');
+        if (Number.isSafeInteger(entry.duration_ms) && entry.duration_ms >= 0) details.push((entry.duration_ms / 1000).toFixed(1) + ' 秒');
+        cell.appendChild(element('div', details.join(' · '), 'muted')); row.appendChild(cell); logs.appendChild(row);
+      });
+      byID('activity-empty').hidden = logs.children.length !== 0;
     }
     async function refreshStatus() {
       if (closed || statusBusy || !bridge) return;
@@ -279,6 +307,11 @@
       input.type = reveal ? 'text' : 'password'; byID('toggle-proxy').textContent = reveal ? '隐藏' : '显示';
       byID('toggle-proxy').setAttribute('aria-pressed', String(reveal));
     });
+    byID('toggle-front-proxy').addEventListener('click', function () {
+      const input = byID('harvest-dial-proxy-url'); const reveal = input.type === 'password';
+      input.type = reveal ? 'text' : 'password'; byID('toggle-front-proxy').textContent = reveal ? '隐藏' : '显示';
+      byID('toggle-front-proxy').setAttribute('aria-pressed', String(reveal));
+    });
     byID('test-config').addEventListener('click', async function () {
       if (busy || !loaded) return;
       setBusy(true); notice('正在检查已保存配置；未保存修改不参与检查。');
@@ -307,7 +340,7 @@
         applyConfig(response.config); loaded = true; setBusy(false); resize();
         if (global.ResizeObserver) { resizeObserver = new global.ResizeObserver(resize); resizeObserver.observe(document.body); }
         await refreshStatus();
-        if (!closed) pollTimer = global.setInterval(function () { if (document.visibilityState !== 'hidden') refreshStatus(); }, 10000);
+        if (!closed) pollTimer = global.setInterval(function () { if (document.visibilityState !== 'hidden') refreshStatus(); }, 5000);
       } catch (error) { if (!closed) { notice(error.message, 'error'); updateSaveState('配置未加载'); byID('connection-status').textContent = '连接失败'; } }
     })();
     return { stop: stop, refreshStatus: refreshStatus };

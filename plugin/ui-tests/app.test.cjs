@@ -40,7 +40,7 @@ test('validates bounds, renewal horizon, duplicate accounts and model allowlist'
 });
 
 test('status tolerates pre-initialization, de-duplicates safe IDs, never labels unknown state as raw text', () => {
-  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, account_ids: [], tickets: [], message: '' });
+  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, account_ids: [], tickets: [], events: [], message: '' });
   const status = ui.parseStatus({ status_json: JSON.stringify({ host_ready: true, account_ids: [8, 2, 8, null, -1, '9', '9007199254740992'], tickets: [] }) });
   assert.deepEqual(status.account_ids, [2, 8, 9]);
   assert.deepEqual(ui.stateLabel('raw-sensitive-ticket-content'), ['未知状态', 'warning']);
@@ -138,4 +138,35 @@ test('status rendering uses text nodes and never displays unrecognized raw state
   assert.equal(rendered.includes('<img'), false);
   assert.match(rendered, /未知状态/);
   h.runtime.stop();
+});
+
+test('front proxy settings validate, save and preserve unsaved edits during log refresh', async () => {
+  const config = configured({ harvest_dial_proxy_url: 'socks5h://front:secret@example.test:1080', observe_exit_ip: true });
+  assert.doesNotThrow(() => ui.validateConfig(config));
+  assert.throws(() => ui.validateConfig({ ...config, harvest_dial_proxy_url: 'http://user-{sid}@proxy.test' }), /占位符/);
+  assert.throws(() => ui.validateConfig({ ...config, harvest_dial_proxy_url: 'file:///secret' }), /HTTP/);
+  const h = uiHarness(); await settle();
+  h.get('harvest-dial-proxy-url').value = config.harvest_dial_proxy_url;
+  h.get('observe-exit-ip').checked = true;
+  await h.get('config-form').fire('input');
+  h.setStatus({ host_ready:true, events: [{ account_id:7, time:'2026-09-19T12:00:00Z', phase:'harvest', result:'model_matched', exit_ip:'203.0.113.8', actual_model:'gpt-test', http_status:200, state_bytes:292, attempt:2, chained:true }] });
+  await h.runtime.refreshStatus();
+  assert.equal(h.get('harvest-dial-proxy-url').value, config.harvest_dial_proxy_url);
+  assert.equal(h.get('activity-body').children.length, 1);
+  const row = h.get('activity-body').children[0];
+  assert.match(row.children[1].textContent,/前置代理/);
+  assert.equal(row.children[2].textContent,'203.0.113.8');
+  await h.get('save-config').click();
+  assert.equal(h.calls.save[0].harvest_dial_proxy_url,config.harvest_dial_proxy_url);
+  assert.equal(h.calls.save[0].observe_exit_ip,true);
+  h.runtime.stop();
+});
+
+test('activity does not render arbitrary model, IP, phase or error text', async () => {
+ const h=uiHarness();await settle();
+ h.setStatus({host_ready:true,events:[{account_id:7,phase:'SECRET',result:'SECRET',exit_ip:'SECRET',actual_model:'SECRET',state_bytes:'SECRET'}]});
+ await h.runtime.refreshStatus();
+ function text(n){return String(n.textContent)+n.children.map(text).join('');}
+ assert.equal(text(h.get('activity-body')).includes('SECRET'),false);
+ h.runtime.stop();
 });

@@ -13,6 +13,7 @@ const maxObservedFrame = 1 << 20
 
 type completionObserver struct {
 	expected                                  string
+	actual                                    string
 	line, event, body                         []byte
 	lineOverflow, eventOverflow, bodyOverflow bool
 	complete, matches                         bool
@@ -121,6 +122,9 @@ func (o *completionObserver) inspect(data []byte) {
 	}
 	if strings.TrimSpace(model) == "" {
 		return
+	}
+	if modelPattern.MatchString(model) {
+		o.actual = model
 	}
 	o.complete = true
 	o.matches = o.matches && model == o.expected

@@ -20,10 +20,10 @@
 </section>
 <section class="card" id="account-panel">
 <div class="section-heading"><div><p class="step">02 / 账号</p><h2>选择需要票据的账号</h2></div><span id="account-count" class="count">0 个账号</span></div>
-<div class="account-toolbar"><div class="add-account"><input id="new-account-id" type="text" inputmode="numeric" list="detected-accounts" aria-label="添加账号 ID" placeholder="选择账号或输入 ID"><datalist id="detected-accounts"></datalist><button id="add-account" type="button" class="secondary">添加</button></div><div class="actions"><button id="refresh-all" type="button" class="secondary" disabled>全部开启账号查找</button><button id="refresh-status" type="button" class="quiet" disabled>刷新</button></div></div>
+<div class="account-toolbar"><div class="add-account"><label class="picker-field">分组<select id="new-account-group" aria-label="选择分组"><option value="all">全部分组</option></select></label><label class="picker-field" id="account-choice-field">账号<select id="new-account-account" aria-label="选择账号"><option value="">正在加载账号…</option></select></label><input id="new-account-id" type="text" inputmode="numeric" list="detected-accounts" aria-label="添加账号 ID" placeholder="输入账号 ID（旧宿主兼容）" hidden><datalist id="detected-accounts"></datalist><button id="add-account" type="button" class="secondary">添加</button></div><div class="actions"><button id="refresh-all" type="button" class="secondary" disabled>全部开启账号查找</button><button id="refresh-status" type="button" class="quiet" disabled>刷新</button></div></div>
 <div class="guard-row"><label class="switch-label"><input id="auto-harvest" type="checkbox">自动续期与补票</label><span class="help">关闭时只运行手动查找；修改后保存。</span></div>
 <p id="refresh-all-status" class="help" role="status" aria-live="polite">单行查找只操作该账号；批量查找只操作已开启账号。</p>
-<p id="account-discovery" class="sr-only"></p><p id="status-summary" class="help">正在读取状态…</p>
+<p id="account-discovery" class="help" role="status" aria-live="polite"></p><p id="status-summary" class="help">正在读取状态…</p>
 <div class="table-wrap"><table class="accounts-table"><thead><tr><th>账号 / 设置</th><th>STATE</th><th>票据状态</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
 <p id="accounts-empty" class="empty">添加一个账号开始。账号开关点击即保存；首次添加和修改套餐需保存设置。</p>
 </section>

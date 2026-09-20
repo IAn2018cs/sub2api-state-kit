@@ -992,10 +992,18 @@ index a85c42e..59a830e 100644
    upload,
    enable,
 diff --git a/frontend/src/views/admin/PluginsView.vue b/frontend/src/views/admin/PluginsView.vue
-index 6c78fc6..31a21c5 100644
+index 6c78fc6..c38d5d3 100644
 --- a/frontend/src/views/admin/PluginsView.vue
 +++ b/frontend/src/views/admin/PluginsView.vue
-@@ -358,6 +358,7 @@ interface PluginBridgeMessage {
+@@ -335,6 +335,7 @@
+ <script setup lang="ts">
+ import { onBeforeUnmount, onMounted, ref } from "vue";
+ import { useI18n } from "vue-i18n";
++import { loadPluginResources } from "./pluginResources";
+ import {
+   adminAPI,
+   type PluginInstallation,
+@@ -358,6 +359,7 @@ interface PluginBridgeMessage {
    type?: string;
    request_id?: string;
    config?: unknown;
@@ -1003,16 +1011,17 @@ index 6c78fc6..31a21c5 100644
    height?: unknown;
    level?: unknown;
    message?: unknown;
-@@ -612,7 +613,7 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
+@@ -612,7 +614,8 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
      message.type === "config.load" ||
      message.type === "config.save" ||
      message.type === "config.test" ||
 -    message.type === "plugin.status";
-+    message.type === "plugin.status" || message.type === "plugin.action";
++    message.type === "plugin.status" || message.type === "plugin.action" ||
++    message.type === "plugin.resources";
    if (expectsResponse) {
      if (!requestID || pendingBridgeRequests.has(requestID)) return;
      registerBridgeRequest(requestID);
-@@ -660,6 +661,12 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
+@@ -660,6 +663,17 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
            appStore.showError(result.message || t("common.error"));
          break;
        }
@@ -1020,6 +1029,11 @@ index 6c78fc6..31a21c5 100644
 +        if (!message.action || typeof message.action !== "object" || Array.isArray(message.action)) throw new Error(t("admin.plugins.bridgeRejected"));
 +        const result = await pluginStepUp.run(() => adminAPI.plugins.action(configPlugin.value!.id, { ...(message.action as Record<string, unknown>), request_id: requestID }));
 +        postBridgeResult(message, { ok: result.accepted, result });
++        break;
++      }
++      case "plugin.resources": {
++        const resources = await loadPluginResources(configPlugin.value);
++        postBridgeResult(message, { ok: true, resources });
 +        break;
 +      }
        case "plugin.status": {
@@ -1217,3 +1231,105 @@ index 0000000..e86c53a
 +		require.Equal(t, tc.code, status.Code(err))
 +	}
 +}
+diff --git a/frontend/src/views/admin/pluginResources.ts b/frontend/src/views/admin/pluginResources.ts
+new file mode 100644
+index 0000000..68d06ca
+--- /dev/null
++++ b/frontend/src/views/admin/pluginResources.ts
+@@ -0,0 +1,41 @@
++import { adminAPI, type PluginInstallation } from '@/api/admin'
++
++/** Read-only UI metadata: available before the plugin runtime starts. */
++export async function loadPluginResources(plugin: PluginInstallation) {
++  if (!plugin.manifest.capabilities.some(capability =>
++    capability.id === 'openai.oauth.outbound_transport.v1' &&
++    capability.platform === 'openai' && capability.account_type === 'oauth')) {
++    throw new Error('此插件未声明 OpenAI OAuth 账号目录权限。')
++  }
++  const loadAccounts = async () => {
++    const accounts = new Map<number, { id: number; name: string; group_ids: number[] }>()
++    for (let page = 1; ; page++) {
++      const result = await adminAPI.accounts.list(page, 100, {
++        platform: 'openai', type: 'oauth', lite: 'true',
++        sort_by: 'id', sort_order: 'asc',
++      })
++      for (const account of result.items) {
++        if (account.platform !== 'openai' || account.type !== 'oauth') continue
++        // Never forward entire account DTOs: they can contain credentials/extra.
++        accounts.set(account.id, { id: account.id, name: account.name,
++          group_ids: [...new Set(account.group_ids || [])] })
++      }
++      if (page >= result.pages || !result.items.length) break
++      if (page >= 1000) throw new Error('账号过多，无法完整读取目录。')
++    }
++    return [...accounts.values()]
++  }
++  const [accounts, groups, proxies] = await Promise.all([
++    loadAccounts(), adminAPI.groups.getAllIncludingInactive(), adminAPI.proxies.getAll(),
++  ])
++  const groupIDs = new Set(accounts.flatMap(account => account.group_ids))
++  return {
++    accounts,
++    groups: groups.filter(group => group.platform === 'openai' || groupIDs.has(group.id))
++      .map(group => ({ id: group.id, name: group.name })),
++    proxies: proxies.filter(proxy => proxy.status === 'active' &&
++      (!proxy.expires_at || Date.parse(proxy.expires_at) > Date.now()))
++      .map(proxy => ({ id: proxy.id, name: proxy.name, protocol: proxy.protocol,
++        host: proxy.host, port: proxy.port })),
++  }
++}
+diff --git a/frontend/src/views/admin/__tests__/pluginResources.spec.ts b/frontend/src/views/admin/__tests__/pluginResources.spec.ts
+new file mode 100644
+index 0000000..3e8b7fb
+--- /dev/null
++++ b/frontend/src/views/admin/__tests__/pluginResources.spec.ts
+@@ -0,0 +1,49 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++import type { PluginInstallation } from '@/api/admin'
++import { loadPluginResources } from '../pluginResources'
++
++const { list, groups, proxies } = vi.hoisted(() => ({ list: vi.fn(), groups: vi.fn(), proxies: vi.fn() }))
++vi.mock('@/api/admin', () => ({ adminAPI: {
++  accounts: { list }, groups: { getAllIncludingInactive: groups }, proxies: { getAll: proxies },
++} }))
++const plugin = { state: 'disabled', manifest: { capabilities: [{
++  id: 'openai.oauth.outbound_transport.v1', platform: 'openai', account_type: 'oauth',
++}] } } as PluginInstallation
++
++describe('passive plugin resource directory', () => {
++  beforeEach(() => { vi.clearAllMocks(); groups.mockResolvedValue([]); proxies.mockResolvedValue([]) })
++  it('loads every page while stopped, restricts accounts and strips secrets', async () => {
++    list.mockResolvedValueOnce({ pages: 2, items: [
++      { id: 1, name: 'One', platform: 'openai', type: 'oauth', group_ids: [3, 4, 3], credentials: { token: 'secret' } },
++      { id: 99, name: 'Other', platform: 'openai', type: 'apikey', group_ids: [9] },
++    ] }).mockResolvedValueOnce({ pages: 2, items: [
++      { id: 2, name: 'Two', platform: 'openai', type: 'oauth', extra: { private: 'secret' } },
++    ] })
++    groups.mockResolvedValue([
++      { id: 3, name: 'OpenAI', platform: 'openai', private: 'secret' },
++      { id: 4, name: 'Mixed', platform: 'composite' },
++      { id: 9, name: 'Other', platform: 'anthropic' },
++    ])
++    proxies.mockResolvedValue([
++      { id: 5, name: 'Proxy', status: 'active', protocol: 'socks5', host: 'example.com', port: 1080, username: 'secret', password: 'secret' },
++      { id: 6, status: 'inactive' }, { id: 7, status: 'active', expires_at: '2000-01-01T00:00:00Z' },
++    ])
++    expect(await loadPluginResources(plugin)).toEqual({
++      accounts: [{ id: 1, name: 'One', group_ids: [3, 4] }, { id: 2, name: 'Two', group_ids: [] }],
++      groups: [{ id: 3, name: 'OpenAI' }, { id: 4, name: 'Mixed' }],
++      proxies: [{ id: 5, name: 'Proxy', protocol: 'socks5', host: 'example.com', port: 1080 }],
++    })
++    expect(list).toHaveBeenNthCalledWith(2, 2, 100, {
++      platform: 'openai', type: 'oauth', lite: 'true', sort_by: 'id', sort_order: 'asc',
++    })
++  })
++  it('rejects a plugin without matching capability before any API reads', async () => {
++    await expect(loadPluginResources({ ...plugin, manifest: { ...plugin.manifest, capabilities: [] } })).rejects.toThrow('权限')
++    expect(list).not.toHaveBeenCalled(); expect(groups).not.toHaveBeenCalled(); expect(proxies).not.toHaveBeenCalled()
++  })
++  it('does not deliver a partial directory when a later page fails', async () => {
++    list.mockResolvedValueOnce({ pages: 2, items: [{ id: 1, name: 'One', platform: 'openai', type: 'oauth' }] })
++      .mockRejectedValueOnce(new Error('network'))
++    await expect(loadPluginResources(plugin)).rejects.toThrow('network')
++  })
++})

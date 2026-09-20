@@ -1,14 +1,24 @@
 # 插件版：在原版 Sub2API 中使用 STATE Kit
 
-插件版使用官方 **Sub2API v0.2.7** 的 `.s2plugin` 接口。基础功能无需修改宿主；**账号名称、IP 管理代理选择、手动查找及代理 / 模型测试**需要额外安装[v0.3.3 宿主适配](plugin-host-directory.md)。它与本仓库基于 v0.2.6 的增量版、完整部署版是三个可选入口，**选择一种即可**。
+插件版使用官方 **Sub2API v0.2.7** 的 `.s2plugin` 接口。基础功能无需修改宿主；**分组 / 账号下拉、账号名称、IP 管理代理选择、手动查找及代理 / 模型测试**需要额外安装[v0.3.4 宿主适配](plugin-host-directory.md)。它与本仓库基于 v0.2.6 的增量版、完整部署版是三个可选入口，**选择一种即可**。
 
-- 下载：[插件版 v0.3.3](https://github.com/wangyunjeff/sub2api-state-kit/releases/tag/v0.3.3)
-- 安装文件：`sub2api-state-kit_plugin_v0.3.3.s2plugin`
-- 完整插件源码：`sub2api-state-kit_plugin_v0.3.3_source.zip`，或本仓库的 [`plugin/`](../plugin/)
+- 下载：[插件版 v0.3.4](https://github.com/wangyunjeff/sub2api-state-kit/releases/tag/v0.3.4)
+- 安装文件：`sub2api-state-kit_plugin_v0.3.4.s2plugin`
+- 完整插件源码：`sub2api-state-kit_plugin_v0.3.4_source.zip`，或本仓库的 [`plugin/`](../plugin/)
 - 包含 Linux amd64、Linux arm64、macOS arm64 三个运行时；宿主自动选择对应架构。
 - 官方接口基线：[v0.2.7 / aea725f](https://github.com/Wei-Shaw/sub2api/tree/aea725f2ea644d5592d0bbb1d63b607efa7e200a)。清单兼容范围为 `>=0.2.7 <0.3.0`，实际验证基线为 0.2.7，其他版本仍需测试。
 
-## v0.3.3 的手动操作
+## v0.3.4：按分组选择账号
+
+在「选择需要票据的账号」中选择分组，再选择账号并点「添加」；账号显示名称和 ID。支持「全部分组」「未分组」，已添加的账号自动排除。分组只用于筛选，不修改账号在 Sub2API 中的分组或代理。
+
+插件停止时也可加载目录；新增账号默认关闭，先保存设置再开启。仅切换下拉选择不会保存配置、采集票据或发送模型请求，刷新不会覆盖未保存草稿。
+
+**分组下拉需要更新到本版宿主适配并重建宿主前端。** 旧宿主仍可输入账号 ID；安装包不会自行修改宿主。
+
+**如果「测试并应用代理」「查找票据」都是灰色，且显示「插件未运行」：** 关闭配置窗口，在插件管理的 STATE Kit 卡片点击「启用」，再打开配置。页面里的「使用 STATE」和账号开关控制票据使用，不能代替宿主启动插件进程。
+
+## 手动操作
 
 在插件配置页：
 
@@ -25,7 +35,7 @@
 
 ## 功能和入口
 
-进入 **插件管理 → STATE Kit · 账号级票据 → 配置**，在一个页面里填写动态代理池，并按账号 ID 分别开启 STATE、选择 Pro（292）或 Team（332）和目标模型。
+进入 **插件管理 → STATE Kit · 账号级票据 → 配置**，在一个页面里填写动态代理池，选择分组与账号后分别开启 STATE、选择 Pro（292）或 Team（332）和目标模型。
 
 | 功能 | 插件版行为 |
 | --- | --- |
@@ -77,7 +87,7 @@
 
    用户名和密码中的特殊字符须分别进行 URL 百分号编码。`{sid}` / `{random}` 用于轮换会话；服务商是否更换实际出口，以其行为为准。不要填“获取代理列表”的 HTTP API 地址。
 
-4. 添加对应账号 ID，选择 Pro / Team，填写要保护的目标模型，打开账号开关。
+4. 选择分组和账号并添加（旧宿主可输入 ID），选择 Pro / Team，填写要保护的目标模型，打开账号开关。
 5. 按需勾选「检测出口 IP 并写入运行日志」。它会在每次采集、业务出口复验和恢复复验时，通过该次代理会话请求 `https://api.ipify.org?format=json`，只发送 IP 查询，不发送账号授权、STATE 或模型内容。每次查询最多 10 秒，失败后继续模型探测。
 6. 按需开启「自动续期与补票」，打开插件内 STATE 总开关并点击「保存设置」。关闭自动续期时，点击账号行「查找票据」手动获取；只有票据状态可用时才会实际注入 STATE。
 
@@ -133,7 +143,7 @@ node --test ui-tests/*.test.cjs
 python3 scripts/package_plugin.py build \
   --private-key /PRIVATE/PATH/publisher.pem --output ./artifacts
 python3 scripts/package_plugin.py verify \
-  --package ./artifacts/sub2api-state-kit_plugin_v0.3.3.s2plugin
+  --package ./artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin
 ```
 
 测试覆盖范围与实际结果见 [插件验证记录](plugin-validation.md)。安装包不含作者的账号、代理凭据、API Key、数据库、STATE 或签名私钥。

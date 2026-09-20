@@ -104,3 +104,11 @@ test('failed host response is surfaced without treating it as successful config'
   await rejected;
   h.bridge.dispose();
 });
+
+test('passive resources use the authenticated bridge and require matching response type',async()=>{
+  const h=harness();const pending=h.bridge.resources();
+  assert.equal(h.posted[0].data.type,'plugin.resources');
+  h.respond(0,{type:'plugin.status.result',resources:{accounts:[]}});assert.equal(h.timers.size,1);
+  h.respond(0,{resources:{accounts:[{id:1,name:'One',group_ids:[3]}],groups:[{id:3,name:'Group'}],proxies:[]}});
+  assert.equal((await pending).resources.accounts[0].id,1);assert.equal(h.timers.size,0);h.bridge.dispose();
+});

@@ -124,6 +124,31 @@
       events: Array.isArray(status.events) ? status.events.slice(-200) : [],
       message: redactError(MESSAGES[status.message] || status.message || result && result.message || '') };
   }
+  function parseResources(result) {
+    const source = result && result.resources && typeof result.resources === 'object' && !Array.isArray(result.resources) ? result.resources : {};
+    const ids = function (values) {
+      return Array.from(new Set((Array.isArray(values) ? values : []).map(accountID).filter(function (id) { return id !== null; })));
+    };
+    const accounts = Array.isArray(source.accounts) ? source.accounts.filter(function (account) {
+      return account && accountID(account.id) !== null;
+    }).map(function (account) {
+      return { id: accountID(account.id), name: typeof account.name === 'string' ? account.name.slice(0, 256) : '', group_ids: ids(account.group_ids) };
+    }) : [];
+    const groups = Array.isArray(source.groups) ? source.groups.filter(function (group) {
+      return group && accountID(group.id) !== null;
+    }).map(function (group) {
+      return { id: accountID(group.id), name: typeof group.name === 'string' ? group.name.slice(0, 256) : '' };
+    }) : [];
+    const proxies = Array.isArray(source.proxies) ? source.proxies.filter(function (proxy) {
+      return proxy && accountID(proxy.id) !== null;
+    }).map(function (proxy) {
+      return { id: accountID(proxy.id), name: typeof proxy.name === 'string' ? proxy.name.slice(0, 256) : '',
+        protocol: typeof proxy.protocol === 'string' ? proxy.protocol.slice(0, 32) : '',
+        host: typeof proxy.host === 'string' ? proxy.host.slice(0, 256) : '',
+        port: Number.isInteger(proxy.port) && proxy.port >= 0 && proxy.port <= 65535 ? proxy.port : 0 };
+    }) : [];
+    return { accounts: accounts, groups: groups, proxies: proxies };
+  }
   function attemptRows(events) {
     const rows=new Map();
     events.forEach(entry=>{
@@ -173,6 +198,9 @@
     let resizeObserver;
     let accounts = [];
     let accountNames = new Map();
+    let resourceCatalog = null;
+    let resourceBusy = false;
+    let resourceError = false;
     let actionsReady = false;
     let actionBusy = false;
     let manualRunning = false;
@@ -194,6 +222,50 @@
     function updateFrontMode() {
       byID('front-manual').hidden = byID('harvest-dial-proxy-mode').value !== 'manual';
       byID('front-managed').hidden = byID('harvest-dial-proxy-mode').value !== 'managed';
+    }
+    function renderPicker() {
+      const group = byID('new-account-group'), choice = byID('new-account-account');
+      const selectedGroup = group.value || 'all', selectedAccount = choice.value;
+      group.replaceChildren(); choice.replaceChildren();
+      const addOption = function (select, value, text) { const option = element('option', text); option.value = value; select.appendChild(option); };
+      addOption(group, 'all', '全部分组');
+      if (resourceCatalog) {
+        addOption(group, 'ungrouped', '未分组');
+        resourceCatalog.groups.forEach(g => addOption(group, String(g.id), g.name + ' · ID ' + g.id));
+      }
+      const validGroup = resourceCatalog && (selectedGroup === 'ungrouped' || resourceCatalog.groups.some(g => String(g.id) === selectedGroup));
+      group.value = validGroup ? selectedGroup : 'all';
+      group.disabled = !resourceCatalog;
+      byID('new-account-id').hidden = !!resourceCatalog;
+      byID('account-choice-field').hidden = !resourceCatalog;
+      if (!resourceCatalog) {
+        byID('account-discovery').textContent = resourceBusy ? '正在读取分组和账号…' : '此宿主暂未提供分组目录，可先输入账号 ID；更新宿主适配后支持下拉选择。';
+        byID('add-account').disabled = false;
+        return;
+      }
+      const inGroup = resourceCatalog.accounts.filter(a => group.value === 'all' || (group.value === 'ungrouped' ? !a.group_ids.length : a.group_ids.includes(Number(group.value))));
+      const available = inGroup.filter(a => !accounts.some(saved => saved.account_id === a.id));
+      addOption(choice, '', available.length ? '请选择账号' : (inGroup.length ? '本组账号已全部添加' : '本组没有可用账号'));
+      available.forEach(a => addOption(choice, String(a.id), (a.name || '未命名账号') + ' · ID ' + a.id));
+      choice.value = available.some(a => String(a.id) === selectedAccount) ? selectedAccount : '';
+      choice.disabled = !available.length;
+      byID('add-account').disabled = !choice.value || accounts.length >= 256;
+      byID('account-discovery').textContent = (resourceError ? '目录刷新失败，暂显示上次列表。' : '') + '本组可添加 ' + available.length + ' 个账号。添加后默认关闭；分组仅用于筛选。';
+    }
+    async function refreshResources() {
+      if (resourceBusy || closed) return;
+      resourceBusy = true; renderPicker();
+      try {
+        if (!bridge.resources) throw Error('legacy host');
+        const response = await bridge.resources();
+        if (closed) return;
+        if (!response.resources || !Array.isArray(response.resources.accounts) || !Array.isArray(response.resources.groups)) throw Error('invalid directory');
+        resourceCatalog = parseResources(response); resourceError = false;
+      } catch (_) { resourceError = true; }
+      finally {
+        resourceBusy = false;
+        if (!closed) { renderStatus(lastStatus || parseStatus({})); renderPicker(); }
+      }
     }
     function renderResources(status) {
       accountNames = new Map(status.accounts.map(a => [a.id, a.name || '未命名账号']));
@@ -280,7 +352,7 @@
         const test=element('button','测试此账号','secondary');test.type='button';test.addEventListener('click',()=>{if(manualRunning||manualPending)return;byID('manual-account').value=String(account.account_id);byID('manual-model').value=account.models[0]||'gpt-6-astra';clearManualResult();byID('manual-panel').scrollIntoView?.({behavior:'smooth',block:'start'});});
         actions.appendChild(refresh);actions.appendChild(test);row.appendChild(actions);body.appendChild(row);
         accountStatusCells.push({id:account.account_id,node:statusCell,button:refresh,testButton:test});
-      });renderAccountStates(lastTickets);byID('accounts-empty').hidden=accounts.length!==0;byID('account-count').textContent=accounts.length+' 个账号';
+      });renderAccountStates(lastTickets);byID('accounts-empty').hidden=accounts.length!==0;byID('account-count').textContent=accounts.length+' 个账号';renderPicker();
     }
     function applyConfig(input) {
       const config = normalizeConfig(input);
@@ -343,6 +415,9 @@
       });
     }
     function renderStatus(status) {
+      if (resourceCatalog) status = Object.assign({}, status, { resources_ready: true,
+        accounts: resourceCatalog.accounts, proxies: resourceCatalog.proxies,
+        account_ids: resourceCatalog.accounts.map(a => a.id) });
       lastStatus=status;
       renderResources(status);
       renderManual(status);
@@ -353,6 +428,7 @@
       const options = byID('detected-accounts'); options.replaceChildren();
       status.account_ids.forEach(function (id) { const option = element('option', accountLabel(id)); option.setAttribute('label', accountLabel(id)); option.value = id; options.appendChild(option); });
       byID('account-discovery').textContent = status.account_ids.length ? '发现 ' + status.account_ids.length + ' 个账号。' + (status.resources_ready ? '输入 ID 或按名称选择。' : '宿主未提供名称，请在账号页核对。') : '暂未发现账号 ID，也可以手动填写。宿主不会向此页面提供账号 Token。';
+      renderPicker();
       lastTickets = status.tickets; renderAccountStates(lastTickets);manualButtons();
       renderActivity(status);
     }
@@ -639,8 +715,11 @@
     }
     byID('harvest-dial-proxy-mode').addEventListener('change', updateFrontMode);
     ['dynamic-proxy-url','harvest-dial-proxy-mode','harvest-dial-proxy-id','harvest-dial-proxy-url'].forEach(id=>{byID(id).addEventListener('input',()=>{if(proxyTest&&proxyTest.phase==='saved'&&JSON.stringify(proxyForm())!==JSON.stringify(proxyTest.proxy)){byID('proxy-test-status').textContent='代理填写内容已更改，请重新测试使新配置生效。';byID('proxy-test-status').className='proxy-result pending';}});});
-    byID('config-form').addEventListener('input', markDirty);
-    byID('config-form').addEventListener('change', markDirty);
+    function configEdited(event) { if (['new-account-group','new-account-account','new-account-id'].includes(event.target?.id)) return; markDirty(); }
+    byID('config-form').addEventListener('input', configEdited);
+    byID('config-form').addEventListener('change', configEdited);
+    byID('new-account-group').addEventListener('change', () => { byID('new-account-account').value = ''; renderPicker(); });
+    byID('new-account-account').addEventListener('change', renderPicker);
     async function saveConfig(event) {
       event.preventDefault(); if (busy || !loaded) return;
       let config;
@@ -660,12 +739,13 @@
     byID('save-config').addEventListener('click', saveConfig);
     byID('config-form').addEventListener('submit', saveConfig);
     byID('add-account').addEventListener('click', function () {
-      const id = accountID(byID('new-account-id').value);
-      if (id === null) { notice('请输入有效的正整数账号 ID。', 'error'); return; }
+      const id = accountID(byID(resourceCatalog ? 'new-account-account' : 'new-account-id').value);
+      if (id === null) { notice(resourceCatalog ? '请先选择账号。' : '请输入有效的正整数账号 ID。', 'error'); return; }
+      if (resourceCatalog && !resourceCatalog.accounts.some(a => a.id === id)) { notice('账号已不在目录中，请刷新后重试。', 'error'); return; }
       if (accounts.some(function (account) { return account.account_id === id; })) { notice('此账号已在列表中。', 'error'); return; }
       if (accounts.length >= 256) { notice('最多配置 256 个账号。', 'error'); return; }
       accounts.push({ account_id: id, enabled: false, plan: 'pro', models: ['gpt-6-astra'] });
-      renderAccounts(); markDirty(); byID('new-account-id').value = ''; notice('已添加账号 ' + id + '，默认关闭。选择套餐和模型后，可手动开启并保存。');
+      renderAccounts(); markDirty(); byID('new-account-id').value = ''; notice('已添加 ' + accountLabel(id) + '，默认关闭。确认套餐并保存设置后，可手动开启。');
     });
     byID('new-account-id').addEventListener('keydown', function (event) {
       if (event.key === 'Enter') { event.preventDefault(); byID('add-account').click(); }
@@ -689,7 +769,7 @@
       } catch (error) { if (!closed) notice(error.message, 'error'); }
       finally { if (!closed) setBusy(false); }
     });
-    byID('refresh-status').addEventListener('click', refreshStatus);
+    byID('refresh-status').addEventListener('click', async () => { await Promise.all([refreshResources(), refreshStatus()]); });
     function resize() { try { bridge.resize(document.documentElement.scrollHeight); } catch (_) { /* Context may already be closed. */ } }
     function stop() {
       if (closed) return;
@@ -707,12 +787,12 @@
         if (closed) return;
         applyConfig(response.config); loaded = true; setBusy(false); resize();
         if (global.ResizeObserver) { resizeObserver = new global.ResizeObserver(resize); resizeObserver.observe(document.body); }
-        await refreshStatus();
+        await Promise.all([refreshResources(), refreshStatus()]);
         if (!closed) pollTimer = global.setInterval(function () { if (document.visibilityState !== 'hidden') refreshStatus(); }, 5000);
       } catch (error) { if (!closed) { notice(error.message, 'error'); updateSaveState('配置未加载'); byID('connection-status').textContent = '连接失败'; } }
     })();
     return { stop: stop, refreshStatus: refreshStatus };
   }
   return { attemptRows:attemptRows, countryLabel:countryLabel, extractHTML:extractHTML, previewDocument:previewDocument, DEFAULT_CONFIG: DEFAULT_CONFIG, normalizeConfig: normalizeConfig, validateConfig: validateConfig,
-    accountID: accountID, parseStatus: parseStatus, stateLabel: stateLabel, errorLabel: errorLabel, redactError: redactError, remainingText: remainingText, start: start };
+    accountID: accountID, parseResources: parseResources, parseStatus: parseStatus, stateLabel: stateLabel, errorLabel: errorLabel, redactError: redactError, remainingText: remainingText, start: start };
 });

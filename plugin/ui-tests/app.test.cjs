@@ -419,3 +419,45 @@ test('log filter shows only selected account and changing it never starts work',
  const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7,12],events:[{account_id:7,phase:'harvest',attempt:1,result:'model_mismatch'},{account_id:12,phase:'harvest',attempt:1,result:'model_matched'}]});await h.runtime.refreshStatus();
  assert.equal(h.get('activity-body').children.length,2);h.get('activity-account').value='12';await h.get('activity-account').fire('change');assert.equal(h.get('activity-body').children.length,1);assert.equal(h.calls.actions.length,0);h.runtime.stop();
 });
+
+test('group picker loads while runtime stopped, excludes added accounts and preserves drafts', async () => {
+  const h = uiHarness();
+  h.setStatus({ host_ready:false, account_ids:[], tickets:[] });
+  let reads = 0;
+  h.bridge.resources = async () => { reads++; return { resources: {
+    accounts:[{id:7,name:'Saved',group_ids:[3]},{id:12,name:'Group Three',group_ids:[3,4]},{id:13,name:'No Group',group_ids:[]}],
+    groups:[{id:3,name:'Three'},{id:4,name:'Four'}], proxies:[],
+  }}; };
+  await settle();
+  h.get('new-account-group').value='3';await h.get('new-account-group').fire('change');
+  assert.deepEqual(h.get('new-account-account').children.map(o=>o.value),['','12']);
+  h.get('new-account-account').value='12';await h.get('new-account-account').fire('change');
+  await h.get('config-form').fire('change',{target:{id:'new-account-account'}});
+  assert.equal(h.get('save-state').textContent,'配置已加载');
+  await h.runtime.refreshStatus();
+  assert.equal(h.get('new-account-group').value,'3');assert.equal(h.get('new-account-account').value,'12');
+  await h.get('add-account').click();
+  assert.equal(h.get('accounts-body').children.length,2);
+  assert.equal(h.get('accounts-body').children[1].children[1].children[0].checked,false);
+  assert.deepEqual(h.get('new-account-account').children.map(o=>o.value),['']);
+  assert.match(h.get('new-account-account').children[0].textContent,/全部添加/);
+  h.get('new-account-group').value='ungrouped';await h.get('new-account-group').fire('change');
+  assert.deepEqual(h.get('new-account-account').children.map(o=>o.value),['','13']);
+  await h.get('refresh-status').click();
+  assert.equal(reads,2);assert.equal(h.get('new-account-group').value,'ungrouped');
+  assert.equal(h.get('save-state').textContent,'有未保存修改');
+  assert.equal(h.calls.save.length,0);assert.equal(h.calls.actions.length,0);assert.equal(h.calls.test,0);
+  assert.equal(h.get('new-account-id').hidden,true);
+  h.runtime.stop();
+});
+
+test('failed metadata refresh retains prior catalog and configured account settings', async () => {
+  const h=uiHarness();h.bridge.resources=async()=>({resources:{accounts:[{id:12,name:'Twelve',group_ids:[]}],groups:[],proxies:[]}});
+  await settle();
+  h.bridge.resources=async()=>{throw Error('offline');};
+  await h.get('refresh-status').click();
+  assert.deepEqual(h.get('new-account-account').children.map(o=>o.value),['','12']);
+  assert.match(h.get('account-discovery').textContent,/刷新失败/);
+  assert.equal(h.get('accounts-body').children.length,1);
+  assert.equal(h.calls.save.length,0);h.runtime.stop();
+});

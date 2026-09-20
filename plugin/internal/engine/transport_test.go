@@ -83,6 +83,7 @@ func fixedStream(start *pluginv1.ForwardRequestStart, body []byte) *mockForwardS
 }
 func forwardingEngine(t *testing.T, enabled bool) *Engine {
 	c := DefaultConfig()
+	c.AllowWithoutTicket = false
 	c.Enabled = enabled
 	c.Accounts = []AccountConfig{{AccountID: 7, Enabled: true, Plan: "pro", Models: []string{"gpt-test"}}}
 	e := &Engine{config: c, clients: newClientPool(), directory: map[int64]bool{7: true}, hostReady: true, tickets: map[string]*ticket{}, revoked: map[string]string{}, records: map[string]*jobRecord{}, wake: make(chan struct{}, 1)}

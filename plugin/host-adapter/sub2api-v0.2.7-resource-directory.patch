@@ -11,8 +11,90 @@ index 1c28eeb..f292fb4 100644
  	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager)
  	crsSyncService := service.NewCRSSyncService(accountRepository, proxyRepository, oAuthService, openAIOAuthService, geminiOAuthService, configConfig)
  	accountHandler := admin.ProvideAccountHandler(configConfig, adminService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, rateLimitService, accountUsageService, accountTestService, concurrencyService, crsSyncService, sessionLimitCache, rpmCache, compositeTokenCacheInvalidator, grokQuotaService)
+diff --git a/backend/internal/handler/admin/plugin_handler.go b/backend/internal/handler/admin/plugin_handler.go
+index efb8e4b..22e143f 100644
+--- a/backend/internal/handler/admin/plugin_handler.go
++++ b/backend/internal/handler/admin/plugin_handler.go
+@@ -251,7 +251,7 @@ func (h *PluginHandler) ServeUIAsset(c *gin.Context) {
+ 	// sandbox iframe 没有 allow-same-origin，会以不透明来源加载自己的 CSS/JS。
+ 	// 资源 URL 由短时随机能力 Token 保护，Bridge Token 只存在于 fragment 中。
+ 	c.Header("Cross-Origin-Resource-Policy", "cross-origin")
+-	c.Header("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; navigate-to 'none'")
++	c.Header("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'self' about:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; navigate-to 'none'")
+ 	c.Data(http.StatusOK, contentType, data)
+ }
+ 
+@@ -271,3 +271,26 @@ func randomPluginToken() (string, error) {
+ 	}
+ 	return hex.EncodeToString(buffer), nil
+ }
++
++func (h *PluginHandler) RunAction(c *gin.Context) {
++	id, ok := pluginIDParam(c)
++	if !ok {
++		return
++	}
++	var raw json.RawMessage
++	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 32768))
++	if err := decoder.Decode(&raw); err != nil {
++		response.BadRequest(c, "动作参数无效或过大")
++		return
++	}
++	if err := decoder.Decode(new(any)); err != io.EOF {
++		response.BadRequest(c, "动作只能包含一个 JSON 值")
++		return
++	}
++	result, err := h.manager.RunAction(c.Request.Context(), id, raw)
++	if err != nil {
++		response.BadRequest(c, "插件动作不可用，请检查插件运行状态与宿主适配")
++		return
++	}
++	response.Success(c, result)
++}
+diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
+index b44ed4c..c8b41ff 100644
+--- a/backend/internal/server/routes/admin.go
++++ b/backend/internal/server/routes/admin.go
+@@ -762,6 +762,7 @@ func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAut
+ 		plugins.GET("/:id/status", h.Admin.Plugin.Status)
+ 		plugins.PUT("/:id/config", gin.HandlerFunc(stepUpAuth), h.Admin.Plugin.SaveConfig)
+ 		plugins.POST("/:id/test", gin.HandlerFunc(stepUpAuth), h.Admin.Plugin.Test)
++		plugins.POST("/:id/actions", gin.HandlerFunc(stepUpAuth), h.Admin.Plugin.RunAction)
+ 		plugins.POST("/:id/ui-session", h.Admin.Plugin.CreateUISession)
+ 	}
+ }
+diff --git a/backend/internal/service/plugin_manager.go b/backend/internal/service/plugin_manager.go
+index 8e69978..e841f29 100644
+--- a/backend/internal/service/plugin_manager.go
++++ b/backend/internal/service/plugin_manager.go
+@@ -1152,3 +1152,25 @@ func stablePluginBucket(accountID int64) uint64 {
+ 	value ^= value >> 33
+ 	return value % 100
+ }
++
++// RunAction is an explicit administrator action on the running plugin only.
++// Never start temporary runtimes for side effects or use passive status for commands.
++func (m *PluginManager) RunAction(ctx context.Context, id int64, raw []byte) (*pluginv1.RunActionResponse, error) {
++	m.operationMu.Lock()
++	defer m.operationMu.Unlock()
++	if len(raw) > 32768 {
++		return nil, errors.New("action too large")
++	}
++	if _, err := m.repo.GetByID(ctx, id); err != nil {
++		return nil, err
++	}
++	m.mu.Lock()
++	runtime := m.runtimes[id]
++	m.mu.Unlock()
++	if runtime == nil {
++		return nil, errors.New("请先在插件管理中启用插件")
++	}
++	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
++	defer cancel()
++	return runtime.api.RunAction(ctx, &pluginv1.RunActionRequest{ActionJson: raw})
++}
 diff --git a/backend/pkg/pluginapi/v1/plugin.pb.go b/backend/pkg/pluginapi/v1/plugin.pb.go
-index cf2f5bb..85f7a1a 100644
+index cf2f5bb..852599c 100644
 --- a/backend/pkg/pluginapi/v1/plugin.pb.go
 +++ b/backend/pkg/pluginapi/v1/plugin.pb.go
 @@ -1,7 +1,7 @@
@@ -25,7 +107,7 @@ index cf2f5bb..85f7a1a 100644
  // source: plugin.proto
  
  package pluginv1
-@@ -1883,6 +1883,318 @@ func (x *ResolveOutboundIdentityResponse) GetHeaders() map[string]*HeaderValues
+@@ -1883,6 +1883,422 @@ func (x *ResolveOutboundIdentityResponse) GetHeaders() map[string]*HeaderValues
  	return nil
  }
  
@@ -194,11 +276,12 @@ index cf2f5bb..85f7a1a 100644
 +}
 +
 +type ListResourcesResponse struct {
-+	state         protoimpl.MessageState `protogen:"open.v1"`
-+	Accounts      []*AccountSummary      `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
-+	Proxies       []*ProxySummary        `protobuf:"bytes,2,rep,name=proxies,proto3" json:"proxies,omitempty"`
-+	unknownFields protoimpl.UnknownFields
-+	sizeCache     protoimpl.SizeCache
++	state            protoimpl.MessageState `protogen:"open.v1"`
++	Accounts         []*AccountSummary      `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
++	Proxies          []*ProxySummary        `protobuf:"bytes,2,rep,name=proxies,proto3" json:"proxies,omitempty"`
++	ActionsSupported bool                   `protobuf:"varint,3,opt,name=actions_supported,json=actionsSupported,proto3" json:"actions_supported,omitempty"`
++	unknownFields    protoimpl.UnknownFields
++	sizeCache        protoimpl.SizeCache
 +}
 +
 +func (x *ListResourcesResponse) Reset() {
@@ -243,6 +326,13 @@ index cf2f5bb..85f7a1a 100644
 +		return x.Proxies
 +	}
 +	return nil
++}
++
++func (x *ListResourcesResponse) GetActionsSupported() bool {
++	if x != nil {
++		return x.ActionsSupported
++	}
++	return false
 +}
 +
 +type ResolveProxyRequest struct {
@@ -341,14 +431,111 @@ index cf2f5bb..85f7a1a 100644
 +	return ""
 +}
 +
++type RunActionRequest struct {
++	state         protoimpl.MessageState `protogen:"open.v1"`
++	ActionJson    []byte                 `protobuf:"bytes,1,opt,name=action_json,json=actionJson,proto3" json:"action_json,omitempty"`
++	unknownFields protoimpl.UnknownFields
++	sizeCache     protoimpl.SizeCache
++}
++
++func (x *RunActionRequest) Reset() {
++	*x = RunActionRequest{}
++	mi := &file_plugin_proto_msgTypes[37]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *RunActionRequest) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*RunActionRequest) ProtoMessage() {}
++
++func (x *RunActionRequest) ProtoReflect() protoreflect.Message {
++	mi := &file_plugin_proto_msgTypes[37]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use RunActionRequest.ProtoReflect.Descriptor instead.
++func (*RunActionRequest) Descriptor() ([]byte, []int) {
++	return file_plugin_proto_rawDescGZIP(), []int{37}
++}
++
++func (x *RunActionRequest) GetActionJson() []byte {
++	if x != nil {
++		return x.ActionJson
++	}
++	return nil
++}
++
++type RunActionResponse struct {
++	state         protoimpl.MessageState `protogen:"open.v1"`
++	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
++	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
++	unknownFields protoimpl.UnknownFields
++	sizeCache     protoimpl.SizeCache
++}
++
++func (x *RunActionResponse) Reset() {
++	*x = RunActionResponse{}
++	mi := &file_plugin_proto_msgTypes[38]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *RunActionResponse) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*RunActionResponse) ProtoMessage() {}
++
++func (x *RunActionResponse) ProtoReflect() protoreflect.Message {
++	mi := &file_plugin_proto_msgTypes[38]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use RunActionResponse.ProtoReflect.Descriptor instead.
++func (*RunActionResponse) Descriptor() ([]byte, []int) {
++	return file_plugin_proto_rawDescGZIP(), []int{38}
++}
++
++func (x *RunActionResponse) GetAccepted() bool {
++	if x != nil {
++		return x.Accepted
++	}
++	return false
++}
++
++func (x *RunActionResponse) GetMessage() string {
++	if x != nil {
++		return x.Message
++	}
++	return ""
++}
++
  var File_plugin_proto protoreflect.FileDescriptor
  
  const file_plugin_proto_rawDesc = "" +
-@@ -2028,7 +2340,25 @@ const file_plugin_proto_rawDesc = "" +
+@@ -2028,8 +2444,34 @@ const file_plugin_proto_rawDesc = "" +
  	"\aheaders\x18\a \x03(\v2?.sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntryR\aheaders\x1a[\n" +
  	"\fHeadersEntry\x12\x10\n" +
  	"\x03key\x18\x01 \x01(\tR\x03key\x125\n" +
 -	"\x05value\x18\x02 \x01(\v2\x1f.sub2api.plugin.v1.HeaderValuesR\x05value:\x028\x012\x95\x05\n" +
+-	"\x0fTransportPlugin\x12P\n" +
 +	"\x05value\x18\x02 \x01(\v2\x1f.sub2api.plugin.v1.HeaderValuesR\x05value:\x028\x01\"\x16\n" +
 +	"\x14ListResourcesRequest\"4\n" +
 +	"\x0eAccountSummary\x12\x0e\n" +
@@ -359,19 +546,28 @@ index cf2f5bb..85f7a1a 100644
 +	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 +	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x12\n" +
 +	"\x04host\x18\x04 \x01(\tR\x04host\x12\x12\n" +
-+	"\x04port\x18\x05 \x01(\x05R\x04port\"\x91\x01\n" +
++	"\x04port\x18\x05 \x01(\x05R\x04port\"\xbe\x01\n" +
 +	"\x15ListResourcesResponse\x12=\n" +
 +	"\baccounts\x18\x01 \x03(\v2!.sub2api.plugin.v1.AccountSummaryR\baccounts\x129\n" +
-+	"\aproxies\x18\x02 \x03(\v2\x1f.sub2api.plugin.v1.ProxySummaryR\aproxies\"0\n" +
++	"\aproxies\x18\x02 \x03(\v2\x1f.sub2api.plugin.v1.ProxySummaryR\aproxies\x12+\n" +
++	"\x11actions_supported\x18\x03 \x01(\bR\x10actionsSupported\"0\n" +
 +	"\x13ResolveProxyRequest\x12\x19\n" +
 +	"\bproxy_id\x18\x01 \x01(\x03R\aproxyId\"I\n" +
 +	"\x14ResolveProxyResponse\x12\x14\n" +
 +	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1b\n" +
-+	"\tproxy_url\x18\x02 \x01(\tR\bproxyUrl2\x95\x05\n" +
- 	"\x0fTransportPlugin\x12P\n" +
++	"\tproxy_url\x18\x02 \x01(\tR\bproxyUrl\"3\n" +
++	"\x10RunActionRequest\x12\x1f\n" +
++	"\vaction_json\x18\x01 \x01(\fR\n" +
++	"actionJson\"I\n" +
++	"\x11RunActionResponse\x12\x1a\n" +
++	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
++	"\amessage\x18\x02 \x01(\tR\amessage2\xed\x05\n" +
++	"\x0fTransportPlugin\x12V\n" +
++	"\tRunAction\x12#.sub2api.plugin.v1.RunActionRequest\x1a$.sub2api.plugin.v1.RunActionResponse\x12P\n" +
  	"\aGetInfo\x12!.sub2api.plugin.v1.GetInfoRequest\x1a\".sub2api.plugin.v1.GetInfoResponse\x12M\n" +
  	"\x06Health\x12 .sub2api.plugin.v1.HealthRequest\x1a!.sub2api.plugin.v1.HealthResponse\x12e\n" +
-@@ -2037,12 +2367,14 @@ const file_plugin_proto_rawDesc = "" +
+ 	"\x0eValidateConfig\x12(.sub2api.plugin.v1.ValidateConfigRequest\x1a).sub2api.plugin.v1.ValidateConfigResponse\x12\\\n" +
+@@ -2037,12 +2479,14 @@ const file_plugin_proto_rawDesc = "" +
  	"\n" +
  	"TestConfig\x12$.sub2api.plugin.v1.TestConfigRequest\x1a%.sub2api.plugin.v1.TestConfigResponse\x12T\n" +
  	"\aForward\x12!.sub2api.plugin.v1.ForwardRequest\x1a\".sub2api.plugin.v1.ForwardResponse(\x010\x01\x12k\n" +
@@ -388,16 +584,16 @@ index cf2f5bb..85f7a1a 100644
  	"\fListAccounts\x12&.sub2api.plugin.v1.ListAccountsRequest\x1a'.sub2api.plugin.v1.ListAccountsResponse\x12\x80\x01\n" +
  	"\x17ResolveOutboundIdentity\x121.sub2api.plugin.v1.ResolveOutboundIdentityRequest\x1a2.sub2api.plugin.v1.ResolveOutboundIdentityResponseB7Z5github.com/Wei-Shaw/sub2api/pkg/pluginapi/v1;pluginv1b\x06proto3"
  
-@@ -2058,7 +2390,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
+@@ -2058,7 +2502,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
  	return file_plugin_proto_rawDescData
  }
  
 -var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
-+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
++var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
  var file_plugin_proto_goTypes = []any{
  	(*GetInfoRequest)(nil),                  // 0: sub2api.plugin.v1.GetInfoRequest
  	(*GetInfoResponse)(nil),                 // 1: sub2api.plugin.v1.GetInfoResponse
-@@ -2091,52 +2423,64 @@ var file_plugin_proto_goTypes = []any{
+@@ -2091,52 +2535,68 @@ var file_plugin_proto_goTypes = []any{
  	(*ListAccountsResponse)(nil),            // 28: sub2api.plugin.v1.ListAccountsResponse
  	(*ResolveOutboundIdentityRequest)(nil),  // 29: sub2api.plugin.v1.ResolveOutboundIdentityRequest
  	(*ResolveOutboundIdentityResponse)(nil), // 30: sub2api.plugin.v1.ResolveOutboundIdentityResponse
@@ -410,16 +606,18 @@ index cf2f5bb..85f7a1a 100644
 +	(*ListResourcesResponse)(nil),           // 34: sub2api.plugin.v1.ListResourcesResponse
 +	(*ResolveProxyRequest)(nil),             // 35: sub2api.plugin.v1.ResolveProxyRequest
 +	(*ResolveProxyResponse)(nil),            // 36: sub2api.plugin.v1.ResolveProxyResponse
-+	nil,                                     // 37: sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
-+	nil,                                     // 38: sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
-+	nil,                                     // 39: sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
++	(*RunActionRequest)(nil),                // 37: sub2api.plugin.v1.RunActionRequest
++	(*RunActionResponse)(nil),               // 38: sub2api.plugin.v1.RunActionResponse
++	nil,                                     // 39: sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
++	nil,                                     // 40: sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
++	nil,                                     // 41: sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
  }
  var file_plugin_proto_depIdxs = []int32{
 -	31, // 0: sub2api.plugin.v1.ForwardRequestStart.headers:type_name -> sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
-+	37, // 0: sub2api.plugin.v1.ForwardRequestStart.headers:type_name -> sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
++	39, // 0: sub2api.plugin.v1.ForwardRequestStart.headers:type_name -> sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
  	11, // 1: sub2api.plugin.v1.ForwardRequest.start:type_name -> sub2api.plugin.v1.ForwardRequestStart
 -	32, // 2: sub2api.plugin.v1.ForwardResponseStart.headers:type_name -> sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
-+	38, // 2: sub2api.plugin.v1.ForwardResponseStart.headers:type_name -> sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
++	40, // 2: sub2api.plugin.v1.ForwardResponseStart.headers:type_name -> sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
  	13, // 3: sub2api.plugin.v1.ForwardResponse.start:type_name -> sub2api.plugin.v1.ForwardResponseStart
  	14, // 4: sub2api.plugin.v1.ForwardResponse.end:type_name -> sub2api.plugin.v1.ForwardResponseEnd
  	15, // 5: sub2api.plugin.v1.ForwardResponse.error:type_name -> sub2api.plugin.v1.ForwardResponseError
@@ -458,64 +656,74 @@ index cf2f5bb..85f7a1a 100644
 -	10, // [10:10] is the sub-list for extension type_name
 -	10, // [10:10] is the sub-list for extension extendee
 -	0,  // [0:10] is the sub-list for field type_name
-+	39, // 6: sub2api.plugin.v1.ResolveOutboundIdentityResponse.headers:type_name -> sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
++	41, // 6: sub2api.plugin.v1.ResolveOutboundIdentityResponse.headers:type_name -> sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
 +	32, // 7: sub2api.plugin.v1.ListResourcesResponse.accounts:type_name -> sub2api.plugin.v1.AccountSummary
 +	33, // 8: sub2api.plugin.v1.ListResourcesResponse.proxies:type_name -> sub2api.plugin.v1.ProxySummary
 +	10, // 9: sub2api.plugin.v1.ForwardRequestStart.HeadersEntry.value:type_name -> sub2api.plugin.v1.HeaderValues
 +	10, // 10: sub2api.plugin.v1.ForwardResponseStart.HeadersEntry.value:type_name -> sub2api.plugin.v1.HeaderValues
 +	10, // 11: sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry.value:type_name -> sub2api.plugin.v1.HeaderValues
-+	0,  // 12: sub2api.plugin.v1.TransportPlugin.GetInfo:input_type -> sub2api.plugin.v1.GetInfoRequest
-+	2,  // 13: sub2api.plugin.v1.TransportPlugin.Health:input_type -> sub2api.plugin.v1.HealthRequest
-+	4,  // 14: sub2api.plugin.v1.TransportPlugin.ValidateConfig:input_type -> sub2api.plugin.v1.ValidateConfigRequest
-+	6,  // 15: sub2api.plugin.v1.TransportPlugin.ApplyConfig:input_type -> sub2api.plugin.v1.ApplyConfigRequest
-+	8,  // 16: sub2api.plugin.v1.TransportPlugin.TestConfig:input_type -> sub2api.plugin.v1.TestConfigRequest
-+	12, // 17: sub2api.plugin.v1.TransportPlugin.Forward:input_type -> sub2api.plugin.v1.ForwardRequest
-+	17, // 18: sub2api.plugin.v1.TransportPlugin.InitHostServices:input_type -> sub2api.plugin.v1.InitHostServicesRequest
-+	19, // 19: sub2api.plugin.v1.HostService.KVGet:input_type -> sub2api.plugin.v1.KVGetRequest
-+	21, // 20: sub2api.plugin.v1.HostService.KVSet:input_type -> sub2api.plugin.v1.KVSetRequest
-+	23, // 21: sub2api.plugin.v1.HostService.KVDelete:input_type -> sub2api.plugin.v1.KVDeleteRequest
-+	25, // 22: sub2api.plugin.v1.HostService.KVList:input_type -> sub2api.plugin.v1.KVListRequest
-+	31, // 23: sub2api.plugin.v1.HostService.ListResources:input_type -> sub2api.plugin.v1.ListResourcesRequest
-+	35, // 24: sub2api.plugin.v1.HostService.ResolveProxy:input_type -> sub2api.plugin.v1.ResolveProxyRequest
-+	27, // 25: sub2api.plugin.v1.HostService.ListAccounts:input_type -> sub2api.plugin.v1.ListAccountsRequest
-+	29, // 26: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:input_type -> sub2api.plugin.v1.ResolveOutboundIdentityRequest
-+	1,  // 27: sub2api.plugin.v1.TransportPlugin.GetInfo:output_type -> sub2api.plugin.v1.GetInfoResponse
-+	3,  // 28: sub2api.plugin.v1.TransportPlugin.Health:output_type -> sub2api.plugin.v1.HealthResponse
-+	5,  // 29: sub2api.plugin.v1.TransportPlugin.ValidateConfig:output_type -> sub2api.plugin.v1.ValidateConfigResponse
-+	7,  // 30: sub2api.plugin.v1.TransportPlugin.ApplyConfig:output_type -> sub2api.plugin.v1.ApplyConfigResponse
-+	9,  // 31: sub2api.plugin.v1.TransportPlugin.TestConfig:output_type -> sub2api.plugin.v1.TestConfigResponse
-+	16, // 32: sub2api.plugin.v1.TransportPlugin.Forward:output_type -> sub2api.plugin.v1.ForwardResponse
-+	18, // 33: sub2api.plugin.v1.TransportPlugin.InitHostServices:output_type -> sub2api.plugin.v1.InitHostServicesResponse
-+	20, // 34: sub2api.plugin.v1.HostService.KVGet:output_type -> sub2api.plugin.v1.KVGetResponse
-+	22, // 35: sub2api.plugin.v1.HostService.KVSet:output_type -> sub2api.plugin.v1.KVSetResponse
-+	24, // 36: sub2api.plugin.v1.HostService.KVDelete:output_type -> sub2api.plugin.v1.KVDeleteResponse
-+	26, // 37: sub2api.plugin.v1.HostService.KVList:output_type -> sub2api.plugin.v1.KVListResponse
-+	34, // 38: sub2api.plugin.v1.HostService.ListResources:output_type -> sub2api.plugin.v1.ListResourcesResponse
-+	36, // 39: sub2api.plugin.v1.HostService.ResolveProxy:output_type -> sub2api.plugin.v1.ResolveProxyResponse
-+	28, // 40: sub2api.plugin.v1.HostService.ListAccounts:output_type -> sub2api.plugin.v1.ListAccountsResponse
-+	30, // 41: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:output_type -> sub2api.plugin.v1.ResolveOutboundIdentityResponse
-+	27, // [27:42] is the sub-list for method output_type
-+	12, // [12:27] is the sub-list for method input_type
++	37, // 12: sub2api.plugin.v1.TransportPlugin.RunAction:input_type -> sub2api.plugin.v1.RunActionRequest
++	0,  // 13: sub2api.plugin.v1.TransportPlugin.GetInfo:input_type -> sub2api.plugin.v1.GetInfoRequest
++	2,  // 14: sub2api.plugin.v1.TransportPlugin.Health:input_type -> sub2api.plugin.v1.HealthRequest
++	4,  // 15: sub2api.plugin.v1.TransportPlugin.ValidateConfig:input_type -> sub2api.plugin.v1.ValidateConfigRequest
++	6,  // 16: sub2api.plugin.v1.TransportPlugin.ApplyConfig:input_type -> sub2api.plugin.v1.ApplyConfigRequest
++	8,  // 17: sub2api.plugin.v1.TransportPlugin.TestConfig:input_type -> sub2api.plugin.v1.TestConfigRequest
++	12, // 18: sub2api.plugin.v1.TransportPlugin.Forward:input_type -> sub2api.plugin.v1.ForwardRequest
++	17, // 19: sub2api.plugin.v1.TransportPlugin.InitHostServices:input_type -> sub2api.plugin.v1.InitHostServicesRequest
++	19, // 20: sub2api.plugin.v1.HostService.KVGet:input_type -> sub2api.plugin.v1.KVGetRequest
++	21, // 21: sub2api.plugin.v1.HostService.KVSet:input_type -> sub2api.plugin.v1.KVSetRequest
++	23, // 22: sub2api.plugin.v1.HostService.KVDelete:input_type -> sub2api.plugin.v1.KVDeleteRequest
++	25, // 23: sub2api.plugin.v1.HostService.KVList:input_type -> sub2api.plugin.v1.KVListRequest
++	31, // 24: sub2api.plugin.v1.HostService.ListResources:input_type -> sub2api.plugin.v1.ListResourcesRequest
++	35, // 25: sub2api.plugin.v1.HostService.ResolveProxy:input_type -> sub2api.plugin.v1.ResolveProxyRequest
++	27, // 26: sub2api.plugin.v1.HostService.ListAccounts:input_type -> sub2api.plugin.v1.ListAccountsRequest
++	29, // 27: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:input_type -> sub2api.plugin.v1.ResolveOutboundIdentityRequest
++	38, // 28: sub2api.plugin.v1.TransportPlugin.RunAction:output_type -> sub2api.plugin.v1.RunActionResponse
++	1,  // 29: sub2api.plugin.v1.TransportPlugin.GetInfo:output_type -> sub2api.plugin.v1.GetInfoResponse
++	3,  // 30: sub2api.plugin.v1.TransportPlugin.Health:output_type -> sub2api.plugin.v1.HealthResponse
++	5,  // 31: sub2api.plugin.v1.TransportPlugin.ValidateConfig:output_type -> sub2api.plugin.v1.ValidateConfigResponse
++	7,  // 32: sub2api.plugin.v1.TransportPlugin.ApplyConfig:output_type -> sub2api.plugin.v1.ApplyConfigResponse
++	9,  // 33: sub2api.plugin.v1.TransportPlugin.TestConfig:output_type -> sub2api.plugin.v1.TestConfigResponse
++	16, // 34: sub2api.plugin.v1.TransportPlugin.Forward:output_type -> sub2api.plugin.v1.ForwardResponse
++	18, // 35: sub2api.plugin.v1.TransportPlugin.InitHostServices:output_type -> sub2api.plugin.v1.InitHostServicesResponse
++	20, // 36: sub2api.plugin.v1.HostService.KVGet:output_type -> sub2api.plugin.v1.KVGetResponse
++	22, // 37: sub2api.plugin.v1.HostService.KVSet:output_type -> sub2api.plugin.v1.KVSetResponse
++	24, // 38: sub2api.plugin.v1.HostService.KVDelete:output_type -> sub2api.plugin.v1.KVDeleteResponse
++	26, // 39: sub2api.plugin.v1.HostService.KVList:output_type -> sub2api.plugin.v1.KVListResponse
++	34, // 40: sub2api.plugin.v1.HostService.ListResources:output_type -> sub2api.plugin.v1.ListResourcesResponse
++	36, // 41: sub2api.plugin.v1.HostService.ResolveProxy:output_type -> sub2api.plugin.v1.ResolveProxyResponse
++	28, // 42: sub2api.plugin.v1.HostService.ListAccounts:output_type -> sub2api.plugin.v1.ListAccountsResponse
++	30, // 43: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:output_type -> sub2api.plugin.v1.ResolveOutboundIdentityResponse
++	28, // [28:44] is the sub-list for method output_type
++	12, // [12:28] is the sub-list for method input_type
 +	12, // [12:12] is the sub-list for extension type_name
 +	12, // [12:12] is the sub-list for extension extendee
 +	0,  // [0:12] is the sub-list for field type_name
  }
  
  func init() { file_plugin_proto_init() }
-@@ -2161,7 +2505,7 @@ func file_plugin_proto_init() {
+@@ -2161,7 +2621,7 @@ func file_plugin_proto_init() {
  			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
  			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
  			NumEnums:      0,
 -			NumMessages:   34,
-+			NumMessages:   40,
++			NumMessages:   42,
  			NumExtensions: 0,
  			NumServices:   2,
  		},
 diff --git a/backend/pkg/pluginapi/v1/plugin.proto b/backend/pkg/pluginapi/v1/plugin.proto
-index ee3d36e..488bcd4 100644
+index ee3d36e..5e4c5db 100644
 --- a/backend/pkg/pluginapi/v1/plugin.proto
 +++ b/backend/pkg/pluginapi/v1/plugin.proto
-@@ -31,6 +31,9 @@ service HostService {
+@@ -5,6 +5,7 @@ package sub2api.plugin.v1;
+ option go_package = "github.com/Wei-Shaw/sub2api/pkg/pluginapi/v1;pluginv1";
+ 
+ service TransportPlugin {
++  rpc RunAction(RunActionRequest) returns (RunActionResponse);
+   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+   rpc Health(HealthRequest) returns (HealthResponse);
+   rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse);
+@@ -31,6 +32,9 @@ service HostService {
    // resolve the outbound identity (credentials/headers/proxy) the host would
    // attach to a live request. The host restricts both calls to accounts the
    // requesting plugin's capability already covers.
@@ -525,7 +733,7 @@ index ee3d36e..488bcd4 100644
    rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
    rpc ResolveOutboundIdentity(ResolveOutboundIdentityRequest) returns (ResolveOutboundIdentityResponse);
  }
-@@ -222,3 +225,10 @@ message ResolveOutboundIdentityResponse {
+@@ -222,3 +226,13 @@ message ResolveOutboundIdentityResponse {
    string token = 6;
    map<string, HeaderValues> headers = 7;
  }
@@ -533,11 +741,14 @@ index ee3d36e..488bcd4 100644
 +message ListResourcesRequest {}
 +message AccountSummary { int64 id = 1; string name = 2; }
 +message ProxySummary { int64 id = 1; string name = 2; string protocol = 3; string host = 4; int32 port = 5; }
-+message ListResourcesResponse { repeated AccountSummary accounts = 1; repeated ProxySummary proxies = 2; }
++message ListResourcesResponse { repeated AccountSummary accounts = 1; repeated ProxySummary proxies = 2; bool actions_supported = 3; }
 +message ResolveProxyRequest { int64 proxy_id = 1; }
 +message ResolveProxyResponse { bool found = 1; string proxy_url = 2; }
++
++message RunActionRequest { bytes action_json = 1; }
++message RunActionResponse { bool accepted = 1; string message = 2; }
 diff --git a/backend/pkg/pluginapi/v1/plugin_grpc.pb.go b/backend/pkg/pluginapi/v1/plugin_grpc.pb.go
-index 88c235d..683d6ad 100644
+index 88c235d..f867718 100644
 --- a/backend/pkg/pluginapi/v1/plugin_grpc.pb.go
 +++ b/backend/pkg/pluginapi/v1/plugin_grpc.pb.go
 @@ -1,7 +1,7 @@
@@ -549,7 +760,94 @@ index 88c235d..683d6ad 100644
  // source: plugin.proto
  
  package pluginv1
-@@ -356,6 +356,8 @@ const (
+@@ -19,6 +19,7 @@ import (
+ const _ = grpc.SupportPackageIsVersion9
+ 
+ const (
++	TransportPlugin_RunAction_FullMethodName        = "/sub2api.plugin.v1.TransportPlugin/RunAction"
+ 	TransportPlugin_GetInfo_FullMethodName          = "/sub2api.plugin.v1.TransportPlugin/GetInfo"
+ 	TransportPlugin_Health_FullMethodName           = "/sub2api.plugin.v1.TransportPlugin/Health"
+ 	TransportPlugin_ValidateConfig_FullMethodName   = "/sub2api.plugin.v1.TransportPlugin/ValidateConfig"
+@@ -32,6 +33,7 @@ const (
+ //
+ // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+ type TransportPluginClient interface {
++	RunAction(ctx context.Context, in *RunActionRequest, opts ...grpc.CallOption) (*RunActionResponse, error)
+ 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+ 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
+ 	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ValidateConfigResponse, error)
+@@ -53,6 +55,16 @@ func NewTransportPluginClient(cc grpc.ClientConnInterface) TransportPluginClient
+ 	return &transportPluginClient{cc}
+ }
+ 
++func (c *transportPluginClient) RunAction(ctx context.Context, in *RunActionRequest, opts ...grpc.CallOption) (*RunActionResponse, error) {
++	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
++	out := new(RunActionResponse)
++	err := c.cc.Invoke(ctx, TransportPlugin_RunAction_FullMethodName, in, out, cOpts...)
++	if err != nil {
++		return nil, err
++	}
++	return out, nil
++}
++
+ func (c *transportPluginClient) GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error) {
+ 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+ 	out := new(GetInfoResponse)
+@@ -130,6 +142,7 @@ func (c *transportPluginClient) InitHostServices(ctx context.Context, in *InitHo
+ // All implementations must embed UnimplementedTransportPluginServer
+ // for forward compatibility.
+ type TransportPluginServer interface {
++	RunAction(context.Context, *RunActionRequest) (*RunActionResponse, error)
+ 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+ 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
+ 	ValidateConfig(context.Context, *ValidateConfigRequest) (*ValidateConfigResponse, error)
+@@ -151,6 +164,9 @@ type TransportPluginServer interface {
+ // pointer dereference when methods are called.
+ type UnimplementedTransportPluginServer struct{}
+ 
++func (UnimplementedTransportPluginServer) RunAction(context.Context, *RunActionRequest) (*RunActionResponse, error) {
++	return nil, status.Error(codes.Unimplemented, "method RunAction not implemented")
++}
+ func (UnimplementedTransportPluginServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
+ 	return nil, status.Error(codes.Unimplemented, "method GetInfo not implemented")
+ }
+@@ -193,6 +209,24 @@ func RegisterTransportPluginServer(s grpc.ServiceRegistrar, srv TransportPluginS
+ 	s.RegisterService(&TransportPlugin_ServiceDesc, srv)
+ }
+ 
++func _TransportPlugin_RunAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
++	in := new(RunActionRequest)
++	if err := dec(in); err != nil {
++		return nil, err
++	}
++	if interceptor == nil {
++		return srv.(TransportPluginServer).RunAction(ctx, in)
++	}
++	info := &grpc.UnaryServerInfo{
++		Server:     srv,
++		FullMethod: TransportPlugin_RunAction_FullMethodName,
++	}
++	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
++		return srv.(TransportPluginServer).RunAction(ctx, req.(*RunActionRequest))
++	}
++	return interceptor(ctx, in, info, handler)
++}
++
+ func _TransportPlugin_GetInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+ 	in := new(GetInfoRequest)
+ 	if err := dec(in); err != nil {
+@@ -315,6 +349,10 @@ var TransportPlugin_ServiceDesc = grpc.ServiceDesc{
+ 	ServiceName: "sub2api.plugin.v1.TransportPlugin",
+ 	HandlerType: (*TransportPluginServer)(nil),
+ 	Methods: []grpc.MethodDesc{
++		{
++			MethodName: "RunAction",
++			Handler:    _TransportPlugin_RunAction_Handler,
++		},
+ 		{
+ 			MethodName: "GetInfo",
+ 			Handler:    _TransportPlugin_GetInfo_Handler,
+@@ -356,6 +394,8 @@ const (
  	HostService_KVSet_FullMethodName                   = "/sub2api.plugin.v1.HostService/KVSet"
  	HostService_KVDelete_FullMethodName                = "/sub2api.plugin.v1.HostService/KVDelete"
  	HostService_KVList_FullMethodName                  = "/sub2api.plugin.v1.HostService/KVList"
@@ -558,7 +856,7 @@ index 88c235d..683d6ad 100644
  	HostService_ListAccounts_FullMethodName            = "/sub2api.plugin.v1.HostService/ListAccounts"
  	HostService_ResolveOutboundIdentity_FullMethodName = "/sub2api.plugin.v1.HostService/ResolveOutboundIdentity"
  )
-@@ -377,6 +379,9 @@ type HostServiceClient interface {
+@@ -377,6 +417,9 @@ type HostServiceClient interface {
  	// resolve the outbound identity (credentials/headers/proxy) the host would
  	// attach to a live request. The host restricts both calls to accounts the
  	// requesting plugin's capability already covers.
@@ -568,7 +866,7 @@ index 88c235d..683d6ad 100644
  	ListAccounts(ctx context.Context, in *ListAccountsRequest, opts ...grpc.CallOption) (*ListAccountsResponse, error)
  	ResolveOutboundIdentity(ctx context.Context, in *ResolveOutboundIdentityRequest, opts ...grpc.CallOption) (*ResolveOutboundIdentityResponse, error)
  }
-@@ -429,6 +434,26 @@ func (c *hostServiceClient) KVList(ctx context.Context, in *KVListRequest, opts
+@@ -429,6 +472,26 @@ func (c *hostServiceClient) KVList(ctx context.Context, in *KVListRequest, opts
  	return out, nil
  }
  
@@ -595,7 +893,7 @@ index 88c235d..683d6ad 100644
  func (c *hostServiceClient) ListAccounts(ctx context.Context, in *ListAccountsRequest, opts ...grpc.CallOption) (*ListAccountsResponse, error) {
  	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
  	out := new(ListAccountsResponse)
-@@ -466,6 +491,9 @@ type HostServiceServer interface {
+@@ -466,6 +529,9 @@ type HostServiceServer interface {
  	// resolve the outbound identity (credentials/headers/proxy) the host would
  	// attach to a live request. The host restricts both calls to accounts the
  	// requesting plugin's capability already covers.
@@ -605,7 +903,7 @@ index 88c235d..683d6ad 100644
  	ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error)
  	ResolveOutboundIdentity(context.Context, *ResolveOutboundIdentityRequest) (*ResolveOutboundIdentityResponse, error)
  	mustEmbedUnimplementedHostServiceServer()
-@@ -490,6 +518,12 @@ func (UnimplementedHostServiceServer) KVDelete(context.Context, *KVDeleteRequest
+@@ -490,6 +556,12 @@ func (UnimplementedHostServiceServer) KVDelete(context.Context, *KVDeleteRequest
  func (UnimplementedHostServiceServer) KVList(context.Context, *KVListRequest) (*KVListResponse, error) {
  	return nil, status.Error(codes.Unimplemented, "method KVList not implemented")
  }
@@ -618,7 +916,7 @@ index 88c235d..683d6ad 100644
  func (UnimplementedHostServiceServer) ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error) {
  	return nil, status.Error(codes.Unimplemented, "method ListAccounts not implemented")
  }
-@@ -589,6 +623,42 @@ func _HostService_KVList_Handler(srv interface{}, ctx context.Context, dec func(
+@@ -589,6 +661,42 @@ func _HostService_KVList_Handler(srv interface{}, ctx context.Context, dec func(
  	return interceptor(ctx, in, info, handler)
  }
  
@@ -661,7 +959,7 @@ index 88c235d..683d6ad 100644
  func _HostService_ListAccounts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
  	in := new(ListAccountsRequest)
  	if err := dec(in); err != nil {
-@@ -648,6 +718,14 @@ var HostService_ServiceDesc = grpc.ServiceDesc{
+@@ -648,6 +756,14 @@ var HostService_ServiceDesc = grpc.ServiceDesc{
  			MethodName: "KVList",
  			Handler:    _HostService_KVList_Handler,
  		},
@@ -676,9 +974,60 @@ index 88c235d..683d6ad 100644
  		{
  			MethodName: "ListAccounts",
  			Handler:    _HostService_ListAccounts_Handler,
+diff --git a/frontend/src/api/admin/plugins.ts b/frontend/src/api/admin/plugins.ts
+index a85c42e..59a830e 100644
+--- a/frontend/src/api/admin/plugins.ts
++++ b/frontend/src/api/admin/plugins.ts
+@@ -155,7 +155,12 @@ export async function createUISession(id: number): Promise<PluginUISession> {
+   return data
+ }
+ 
++export async function action(id: number, action: Record<string, unknown>): Promise<{accepted: boolean; message: string}> {
++ const { data } = await apiClient.post(`/admin/plugins/${id}/actions`, action)
++ return data
++}
+ export default {
++ action,
+   list,
+   upload,
+   enable,
+diff --git a/frontend/src/views/admin/PluginsView.vue b/frontend/src/views/admin/PluginsView.vue
+index 6c78fc6..31a21c5 100644
+--- a/frontend/src/views/admin/PluginsView.vue
++++ b/frontend/src/views/admin/PluginsView.vue
+@@ -358,6 +358,7 @@ interface PluginBridgeMessage {
+   type?: string;
+   request_id?: string;
+   config?: unknown;
++  action?: unknown;
+   height?: unknown;
+   level?: unknown;
+   message?: unknown;
+@@ -612,7 +613,7 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
+     message.type === "config.load" ||
+     message.type === "config.save" ||
+     message.type === "config.test" ||
+-    message.type === "plugin.status";
++    message.type === "plugin.status" || message.type === "plugin.action";
+   if (expectsResponse) {
+     if (!requestID || pendingBridgeRequests.has(requestID)) return;
+     registerBridgeRequest(requestID);
+@@ -660,6 +661,12 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
+           appStore.showError(result.message || t("common.error"));
+         break;
+       }
++      case "plugin.action": {
++        if (!message.action || typeof message.action !== "object" || Array.isArray(message.action)) throw new Error(t("admin.plugins.bridgeRejected"));
++        const result = await pluginStepUp.run(() => adminAPI.plugins.action(configPlugin.value!.id, { ...(message.action as Record<string, unknown>), request_id: requestID }));
++        postBridgeResult(message, { ok: result.accepted, result });
++        break;
++      }
+       case "plugin.status": {
+         // Read-only runtime status (the plugin's Health snapshot). It has no side
+         // effects, so it is intentionally NOT step-up gated and never raises a host
 diff --git a/backend/internal/service/plugin_resource_directory.go b/backend/internal/service/plugin_resource_directory.go
 new file mode 100644
-index 0000000..f2445e2
+index 0000000..6b9ff80
 --- /dev/null
 +++ b/backend/internal/service/plugin_resource_directory.go
 @@ -0,0 +1,99 @@
@@ -720,7 +1069,7 @@ index 0000000..f2445e2
 +	if err != nil {
 +		return nil, err
 +	}
-+	out := &pluginv1.ListResourcesResponse{}
++	out := &pluginv1.ListResourcesResponse{ActionsSupported: true}
 +	for _, a := range accounts {
 +		if allowed[a.ID] {
 +			out.Accounts = append(out.Accounts, &pluginv1.AccountSummary{Id: a.ID, Name: a.Name})

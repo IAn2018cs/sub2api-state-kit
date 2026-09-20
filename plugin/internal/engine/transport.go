@@ -39,16 +39,19 @@ type clientPool struct {
 func newClientPool() *clientPool { return &clientPool{clients: make(map[[32]byte]pooledClient)} }
 
 func (p *clientPool) client(proxyURL string) (*http.Client, error) {
+	return p.chainedClient(proxyURL, "")
+}
+func (p *clientPool) chainedClient(proxyURL, outer string) (*http.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	key := sha256.Sum256([]byte(proxyURL))
+	key := sha256.Sum256([]byte(proxyURL + "\x00" + outer))
 	p.clock++
 	if item, ok := p.clients[key]; ok {
 		item.used = p.clock
 		p.clients[key] = item
 		return item.client, nil
 	}
-	client, err := makeHTTPClient(proxyURL, false)
+	client, err := chainedHTTPClient(proxyURL, outer, false)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +208,18 @@ func (e *Engine) Forward(stream pluginv1.TransportPlugin_ForwardServer) error {
 		// passthrough preserves the caller's compression preferences and raw bytes.
 		req.Header.Set("Accept-Encoding", "identity")
 	}
-	client, err := e.clients.client(start.ProxyUrl)
+	e.mu.Lock()
+	businessConfig := e.config
+	_, listed := findAccount(businessConfig, start.AccountId)
+	e.mu.Unlock()
+	outer := ""
+	if listed && start.Platform == "openai" && start.AccountType == "oauth" {
+		outer, err = e.resolveBusinessFront(ctx, businessConfig, start.ProxyUrl)
+		if err != nil {
+			return sendForwardError(stream, "invalid_proxy", "Business front proxy unavailable", false)
+		}
+	}
+	client, err := e.clients.chainedClient(start.ProxyUrl, outer)
 	if err != nil {
 		return sendForwardError(stream, "invalid_proxy", "Invalid proxy configuration", false)
 	}

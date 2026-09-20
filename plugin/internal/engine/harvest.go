@@ -19,6 +19,8 @@ import (
 	pluginv1 "github.com/wangyunjeff/sub2api-state-kit/plugin/internal/pluginapi/v1"
 )
 
+var errProbeModelMismatch = errors.New("probe completed with another model")
+
 func (e *Engine) loop() {
 	defer close(e.done)
 	timer := time.NewTicker(e.tick)
@@ -75,7 +77,7 @@ func (e *Engine) refreshDirectory() {
 func (e *Engine) schedule() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.closed || !e.config.Enabled || e.host == nil || time.Now().Before(e.activeAfter) {
+	if e.closed || !e.config.Enabled || !e.config.AutoHarvest || e.host == nil || time.Now().Before(e.activeAfter) {
 		return
 	}
 	now := time.Now()
@@ -93,19 +95,43 @@ func (e *Engine) schedule() {
 				continue
 			}
 			t := e.tickets[k]
-			if validTicket(t, e.config, a, model, now) && t.ExpiresAt.Sub(now) > time.Duration(e.config.RefreshBeforeMinutes)*time.Minute {
+			if !e.forceRefresh[k] && validTicket(t, e.config, a, model, now) && t.ExpiresAt.Sub(now) > time.Duration(e.config.RefreshBeforeMinutes)*time.Minute {
 				continue
 			}
-			c := e.config
-			gen := e.generation
-			ctx := e.generationCtx
-			host := e.host
-			e.jobs[k] = gen
-			e.wg.Add(1)
-			go e.collect(ctx, host, c, a, model, k, gen)
+			force := e.forceRefresh[k]
+			delete(e.forceRefresh, k)
+			e.startCollectLocked(a, model, force, "automatic")
 		}
 	}
 }
+
+// Caller holds e.mu. Targeted manual starts never wake the all-account scheduler.
+func (e *Engine) startCollectLocked(a AccountConfig, model string, force bool, trigger string) bool {
+	k := keyFor(a.AccountID, model)
+	if e.closed || !e.config.Enabled || !a.Enabled || !e.directory[a.AccountID] {
+		return false
+	}
+	if _, running := e.jobs[k]; running {
+		return false
+	}
+	if force {
+		delete(e.records, k)
+	}
+	if e.records[k] == nil {
+		e.records[k] = &jobRecord{}
+	}
+	e.records[k].Trigger = trigger
+	e.records[k].RoundID = randomID()
+	e.records[k].ExitIP = ""
+	e.records[k].CountryCode = ""
+	gen := e.generation
+	e.jobs[k] = gen
+	e.wg.Add(1)
+	e.eventLocked(activityEvent{AccountID: a.AccountID, Model: model, Phase: "collection", Result: "started", Trigger: trigger, RoundID: e.records[k].RoundID})
+	go e.collect(e.generationCtx, e.host, e.config, a, model, k, gen, force)
+	return true
+}
+
 func (e *Engine) activeLocked(k string, gen uint64) bool {
 	current, ok := e.jobs[k]
 	return !e.closed && e.generation == gen && ok && current == gen
@@ -121,10 +147,14 @@ func (e *Engine) note(k string, gen uint64, attempt int, reason string) {
 		r = &jobRecord{}
 		e.records[k] = r
 	}
+	if r.Attempts != attempt {
+		r.ExitIP = ""
+		r.CountryCode = ""
+	}
 	r.Attempts = attempt
 	r.LastError = reason
 }
-func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c Config, a AccountConfig, model, k string, gen uint64) {
+func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c Config, a AccountConfig, model, k string, gen uint64, force bool) {
 	defer e.wg.Done()
 	success := false
 	reason := "attempts_exhausted"
@@ -139,6 +169,10 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 			event.Result = "ready"
 		} else if ctx.Err() != nil {
 			event.Result = "cancelled"
+		}
+		if r := e.records[k]; r != nil {
+			event.Trigger = r.Trigger
+			event.RoundID = r.RoundID
 		}
 		e.eventLocked(event)
 		delete(e.jobs, k)
@@ -166,15 +200,36 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 		reason = "identity_unavailable"
 		return
 	}
+	if force {
+		e.note(k, gen, 0, "checking_business_proxy")
+		outer, err := e.resolveBusinessFront(ctx, c, identity.ProxyUrl)
+		if err != nil {
+			reason = "managed_proxy_unavailable"
+			return
+		}
+		client, err := harvestClient(identity.ProxyUrl, outer)
+		if err != nil {
+			reason = "business_connectivity_failed"
+			return
+		}
+		ok, _, _ := e.checkProxyConnectivity(ctx, client, k, gen, a.AccountID, model, 0, "business", outer != "")
+		client.CloseIdleConnections()
+		if !ok {
+			reason = "business_connectivity_failed"
+			return
+		}
+	}
 	fp := configFingerprint(c, a, model)
 	// Restored tickets are revalidated through the current business proxy before
 	// reuse. This also prevents a failed persistence deletion reviving a bad ticket.
-	if restored, status := e.restore(ctx, host, c, a, model, k, gen, identity, fp); restored {
-		success = true
-		return
-	} else if isStopStatus(status) {
-		reason = stopReason(status)
-		return
+	if !force {
+		if restored, status := e.restore(ctx, host, c, a, model, k, gen, identity, fp); restored {
+			success = true
+			return
+		} else if isStopStatus(status) {
+			reason = stopReason(status)
+			return
+		}
 	}
 	for attempt := 1; attempt <= c.MaxAttempts; attempt++ {
 		if ctx.Err() != nil {
@@ -199,9 +254,18 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 			return
 		}
 		captured := time.Now()
-		candidate, status, err := e.observedProbe(ctx, c, identity, model, rotating, "", k, gen, attempt, "harvest")
+		candidate, status, err := e.observedProbeChecked(ctx, c, identity, model, rotating, "", k, gen, attempt, "harvest", force)
 		if err != nil {
 			reason = "harvest_failed"
+			if errors.Is(err, errProbeModelMismatch) {
+				reason = "model_mismatch"
+			}
+			if errors.Is(err, errConnectivityCheck) {
+				reason = "dynamic_connectivity_failed"
+				// A single rotating exit failing does not invalidate the pool.
+				// Respect the configured attempt/interval bound and try another.
+				continue
+			}
 			if errors.Is(err, errManagedProxyUnavailable) {
 				reason = "managed_proxy_unavailable"
 				return
@@ -410,8 +474,9 @@ func (e *Engine) probeWithClient(ctx context.Context, identity *pluginv1.Resolve
 		detail.Result = "model_mismatch"
 		if !complete {
 			detail.Result = "incomplete_response"
+			return "", status, errors.New("probe did not complete")
 		}
-		return "", status, errors.New("probe did not complete with requested model")
+		return "", status, errProbeModelMismatch
 	}
 	return strings.TrimSpace(response.Header.Get(StateHeader)), status, nil
 }

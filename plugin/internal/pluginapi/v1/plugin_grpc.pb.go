@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	TransportPlugin_RunAction_FullMethodName        = "/sub2api.plugin.v1.TransportPlugin/RunAction"
 	TransportPlugin_GetInfo_FullMethodName          = "/sub2api.plugin.v1.TransportPlugin/GetInfo"
 	TransportPlugin_Health_FullMethodName           = "/sub2api.plugin.v1.TransportPlugin/Health"
 	TransportPlugin_ValidateConfig_FullMethodName   = "/sub2api.plugin.v1.TransportPlugin/ValidateConfig"
@@ -32,6 +33,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TransportPluginClient interface {
+	RunAction(ctx context.Context, in *RunActionRequest, opts ...grpc.CallOption) (*RunActionResponse, error)
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ValidateConfigResponse, error)
@@ -51,6 +53,16 @@ type transportPluginClient struct {
 
 func NewTransportPluginClient(cc grpc.ClientConnInterface) TransportPluginClient {
 	return &transportPluginClient{cc}
+}
+
+func (c *transportPluginClient) RunAction(ctx context.Context, in *RunActionRequest, opts ...grpc.CallOption) (*RunActionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RunActionResponse)
+	err := c.cc.Invoke(ctx, TransportPlugin_RunAction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *transportPluginClient) GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error) {
@@ -130,6 +142,7 @@ func (c *transportPluginClient) InitHostServices(ctx context.Context, in *InitHo
 // All implementations must embed UnimplementedTransportPluginServer
 // for forward compatibility.
 type TransportPluginServer interface {
+	RunAction(context.Context, *RunActionRequest) (*RunActionResponse, error)
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	ValidateConfig(context.Context, *ValidateConfigRequest) (*ValidateConfigResponse, error)
@@ -151,6 +164,9 @@ type TransportPluginServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTransportPluginServer struct{}
 
+func (UnimplementedTransportPluginServer) RunAction(context.Context, *RunActionRequest) (*RunActionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RunAction not implemented")
+}
 func (UnimplementedTransportPluginServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetInfo not implemented")
 }
@@ -191,6 +207,24 @@ func RegisterTransportPluginServer(s grpc.ServiceRegistrar, srv TransportPluginS
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&TransportPlugin_ServiceDesc, srv)
+}
+
+func _TransportPlugin_RunAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RunActionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TransportPluginServer).RunAction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TransportPlugin_RunAction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TransportPluginServer).RunAction(ctx, req.(*RunActionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _TransportPlugin_GetInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -315,6 +349,10 @@ var TransportPlugin_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "sub2api.plugin.v1.TransportPlugin",
 	HandlerType: (*TransportPluginServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RunAction",
+			Handler:    _TransportPlugin_RunAction_Handler,
+		},
 		{
 			MethodName: "GetInfo",
 			Handler:    _TransportPlugin_GetInfo_Handler,

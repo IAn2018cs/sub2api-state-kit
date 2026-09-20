@@ -14,12 +14,15 @@ import (
 )
 
 const PluginID = "io.github.wangyunjeff.sub2api-state-kit"
-const Version = "0.3.2"
+const Version = "0.3.3"
 const StateHeader = "x-codex-turn-state"
 const namespace = "state-kit-v1"
 
 // Config contains no OAuth credentials. The host owns credential refresh.
 type Config struct {
+	BusinessUseFront       bool            `json:"business_use_front"`
+	AutoHarvest            bool            `json:"auto_harvest"`
+	AllowWithoutTicket     bool            `json:"allow_without_ticket"`
 	HarvestDialProxyMode   string          `json:"harvest_dial_proxy_mode"`
 	HarvestDialProxyID     int64           `json:"harvest_dial_proxy_id"`
 	HarvestDialProxyURL    string          `json:"harvest_dial_proxy_url"`
@@ -41,7 +44,7 @@ type AccountConfig struct {
 }
 
 func DefaultConfig() Config {
-	return Config{TTLMinutes: 60, RefreshBeforeMinutes: 10, MaxAttempts: 8, AttemptIntervalSeconds: 10, CooldownSeconds: 300, Accounts: []AccountConfig{}}
+	return Config{AutoHarvest: true, AllowWithoutTicket: true, TTLMinutes: 60, RefreshBeforeMinutes: 10, MaxAttempts: 8, AttemptIntervalSeconds: 10, CooldownSeconds: 300, Accounts: []AccountConfig{}}
 }
 
 var modelPattern = regexp.MustCompile(`^gpt-[A-Za-z0-9][A-Za-z0-9._-]{0,94}$`)
@@ -192,6 +195,9 @@ func digest(parts ...string) string {
 }
 func configFingerprint(c Config, a AccountConfig, model string) string {
 	dynamicRoute := c.DynamicProxyURL
+	if c.BusinessUseFront {
+		dynamicRoute = digest("business-front-v1", dynamicRoute)
+	}
 	if frontProxyMode(c) == "managed" {
 		dynamicRoute = digest("managed-v1", dynamicRoute, strconv.FormatInt(c.HarvestDialProxyID, 10))
 	} else if frontProxyMode(c) == "manual" {

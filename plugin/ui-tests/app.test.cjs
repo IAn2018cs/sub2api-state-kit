@@ -40,7 +40,7 @@ test('validates bounds, renewal horizon, duplicate accounts and model allowlist'
 });
 
 test('status tolerates pre-initialization, de-duplicates safe IDs, never labels unknown state as raw text', () => {
-  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, resources_ready: false, accounts: [], proxies: [], account_ids: [], tickets: [], events: [], message: '' });
+  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, resources_ready: false, actions_ready: false, manual_test: null, accounts: [], proxies: [], account_ids: [], tickets: [], events: [], message: '' });
   const status = ui.parseStatus({ status_json: JSON.stringify({ host_ready: true, account_ids: [8, 2, 8, null, -1, '9', '9007199254740992'], tickets: [] }) });
   assert.deepEqual(status.account_ids, [2, 8, 9]);
   assert.deepEqual(ui.stateLabel('raw-sensitive-ticket-content'), ['未知状态', 'warning']);
@@ -64,7 +64,7 @@ class Node {
   get value() { return this._value; }
   set value(value) { this._value = String(value); }
   appendChild(child) { this.children.push(child); return child; }
-  replaceChildren(...children) { this.children = children; }
+  replaceChildren(...children) { this.children = children; this.textContent = ""; }
   addEventListener(type, fn) { this.listeners[type] = fn; }
   setAttribute(key, value) { this.attributes[key] = value; }
   async fire(type, event = {}) { if (this.listeners[type]) return this.listeners[type]({ preventDefault() {}, ...event }); }
@@ -73,20 +73,21 @@ class Node {
 
 function uiHarness() {
   const elements = new Map();
-  const calls = { load: 0, save: [], test: 0, status: 0, dispose: 0 };
+  const calls = { load: 0, save: [], test: 0, status: 0, dispose: 0, actions: [] };
   const timers = new Map();
   const document = { getElementById: id => { if (!elements.has(id)) elements.set(id, new Node('div')); return elements.get(id); },
     createElement: tag => new Node(tag), documentElement: { scrollHeight: 900 }, body: new Node('body'), visibilityState: 'visible' };
-  const config = configured();
+  let config = configured();
   let status = { host_ready: true, account_ids: [7, 12], tickets: [{ account_id: 7, plan: 'pro', model: 'gpt-6-astra', state: 'ready', remaining_seconds: 600, attempts: 1 }] };
   const bridge = { ready() {}, resize() {}, dispose() { calls.dispose++; },
     async load() { calls.load++; return { config }; },
     async save(value) { calls.save.push(value); return { config: value }; },
+    async action(value) {calls.actions.push(value);return {request_id:'proxy-action-'+calls.actions.length,result:{accepted:true,message:'已开始'}};},
     async test() { calls.test++; return { result: { message: '检查通过' } }; },
     async status() { calls.status++; return { result: { status_json: JSON.stringify(status) } }; } };
   const global = { document, Sub2APIPluginBridge: bridge, setInterval: fn => { timers.set(1, fn); return 1; }, clearInterval: id => timers.delete(id), addEventListener() {}, removeEventListener() {} };
   const runtime = ui.start(global);
-  return { elements, get: document.getElementById, calls, timers, runtime, setStatus: value => { status = value; } };
+  return { elements, get: document.getElementById, calls, timers, runtime, bridge, setConfig:value=>{config=value;}, setStatus: value => { status = value; } };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -108,7 +109,7 @@ test('adding account defaults off, saved-config check does not save or overwrite
   h.get('new-account-id').value = '12'; await h.get('add-account').click();
   const row = h.get('accounts-body').children[1];
   assert.equal(row.children[1].children[0].checked, false);
-  assert.equal(row.children[2].children[0].value, 'pro');
+  assert.equal(row.children[0].children[1].children[1].value, 'pro');
   await h.get('test-config').click();
   assert.equal(h.calls.test, 1); assert.equal(h.calls.save.length, 0);
   assert.equal(h.get('accounts-body').children.length, 2);
@@ -133,7 +134,7 @@ test('status rendering uses text nodes and never displays unrecognized raw state
   h.setStatus({ host_ready: true, account_ids: [7], tickets: [{ account_id: 7, plan: 'pro', model: '<img src=x onerror=alert(1)>', state: 'SECRET-STATE-VALUE', last_error: 'x-codex-turn-state=SECRET-STATE-VALUE', remaining_seconds: 9 }] });
   await h.runtime.refreshStatus();
   function text(node) { return String(node.textContent) + node.children.map(text).join(''); }
-  const rendered = text(h.get('tickets-body'));
+  const rendered = text(h.get('accounts-body').children[0].children[2]);
   assert.equal(rendered.includes('SECRET-STATE-VALUE'), false);
   assert.equal(rendered.includes('<img'), false);
   assert.match(rendered, /未知状态/);
@@ -182,13 +183,13 @@ test('names and managed proxies render safely and refresh preserves unsaved sele
  const h=uiHarness(); await settle();
  h.get('harvest-dial-proxy-mode').value='managed'; await h.get('harvest-dial-proxy-mode').fire('change');
  h.get('harvest-dial-proxy-id').value='3';
- const modelInput=h.get('accounts-body').children[0].children[3].children[0];
+ const modelInput=h.get('accounts-body').children[0].children[0].children[1].children[2];
  modelInput.value='gpt-unsaved'; await modelInput.fire('input');
  h.setStatus({host_ready:true,resources_ready:true,account_ids:[7],accounts:[{id:7,name:'Mail <img onerror=bad>'}],proxies:[{id:3,name:'Front',protocol:'http',host:'front.example',port:8080}],tickets:[]});
  await h.runtime.refreshStatus();
- assert.match(h.get('accounts-body').children[0].children[0].textContent,/Mail.*ID 7/);
- assert.equal(h.get('accounts-body').children[0].children[0].children.length,0);
- assert.equal(h.get('accounts-body').children[0].children[3].children[0],modelInput);
+ assert.match(h.get('accounts-body').children[0].children[0].children[0].textContent,/Mail.*ID 7/);
+ assert.equal(h.get('accounts-body').children[0].children[0].children[0].children.length,0);
+ assert.equal(h.get('accounts-body').children[0].children[0].children[1].children[2],modelInput);
  assert.equal(modelInput.value,'gpt-unsaved');
  assert.equal(h.get('harvest-dial-proxy-id').value,'3');
  assert.equal(h.get('managed-proxy-option').disabled,false);
@@ -205,4 +206,216 @@ test('names and managed proxies render safely and refresh preserves unsaved sele
  assert.equal(h.calls.save[1].harvest_dial_proxy_id,0);
  assert.equal(h.calls.save[1].harvest_dial_proxy_url,'');
  h.runtime.stop();
+});
+
+test('HTML extraction and preview have restrictive policy', () => {
+ assert.equal(ui.extractHTML('```html\n<html>hello</html>\n```').trim(),'<html>hello</html>');
+ assert.equal(ui.extractHTML('plain response'),'');
+ const doc=ui.previewDocument('<script>window.demo=1</script>');
+ assert.match(doc,/connect-src 'none'/);assert.match(doc,/form-action 'none'/);
+});
+test('single-account switch saves only that switch and preserves global drafts', async () => {
+ const h=uiHarness();await settle();h.get('dynamic-proxy-url').value='http://unsaved.example:8080';
+ const row=h.get('accounts-body').children[0];const checkbox=row.children[1].children[0];checkbox.checked=true;await checkbox.fire('change');
+ assert.equal(h.calls.save.length,1);assert.equal(h.calls.save[0].accounts[0].enabled,true);assert.equal(h.calls.save[0].dynamic_proxy_url,'');
+ assert.equal(h.get('dynamic-proxy-url').value,'http://unsaved.example:8080');h.runtime.stop();
+});
+test('manual result is text-only until preview clicked; status never runs tests',async()=>{
+ const h=uiHarness();await settle();
+ assert.equal(h.get('manual-account').value,'7');
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'one',kind:'test',account_id:7,model:'gpt-test',actual_model:'gpt-other',running:false,complete:true,matches:false,text:'<html><script>bad()</script></html>',route:'business'}});
+ await h.runtime.refreshStatus();assert.match(h.get('manual-result-title').textContent,/模型不匹配/);
+ assert.equal(h.get('manual-output').children.length,0);assert.match(h.get('manual-output').textContent,/<script>/);assert.equal(h.get('html-preview').hidden,true);
+ await h.get('preview-html').click();assert.equal(h.get('html-preview').hidden,false);assert.match(h.get('html-preview').srcdoc,/Content-Security-Policy/);
+ assert.equal(h.get('manual-output').hidden,true);await h.get('preview-html').click();assert.equal(h.get('html-preview').hidden,true);assert.equal(h.get('manual-output').hidden,false);
+ assert.equal(h.calls.test,0);h.runtime.stop();
+});
+
+test('model verification exposes request and actual model cards with explicit mismatch status',async()=>{
+ const h=uiHarness();await settle();
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'model-mismatch',kind:'test',account_id:7,model:'gpt-6-astra',actual_model:'gpt-5.2-luna',running:false,complete:true,matches:false,text:'OK'}});
+ await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-model-comparison').hidden,false);
+ assert.equal(h.get('manual-request-model').textContent,'gpt-6-astra');
+ assert.equal(h.get('manual-actual-model').textContent,'gpt-5.2-luna');
+ assert.equal(h.get('manual-model-match').className,'model-match mismatch');
+ assert.match(h.get('manual-model-match').textContent,/模型名称不一致/);
+ h.runtime.stop();
+});
+
+test('model cards show pending or absent values, hide for IP tests, and clear without a result',async()=>{
+ const h=uiHarness();await settle();
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'model-pending',kind:'test',account_id:7,running:true}});
+ await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-model-comparison').hidden,false);
+ assert.equal(h.get('manual-request-model').textContent,'未提供');
+ assert.equal(h.get('manual-actual-model').textContent,'等待返回');
+ assert.equal(h.get('manual-model-match').className,'model-match pending');
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'model-absent',kind:'test',account_id:7,running:false,complete:true}});
+ await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-actual-model').textContent,'未提供');
+ assert.equal(h.get('manual-model-match').className,'model-match warning');
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'ip-only',kind:'ip',account_id:7,running:false,complete:true,exit_ip:'203.0.113.8'}});
+ await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-model-comparison').hidden,true);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:null});
+ await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-model-comparison').hidden,true);
+ h.runtime.stop();
+});
+
+test('proxy connectivity sends only current draft proxy fields without saving or model prompt',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[]});await h.runtime.refreshStatus();
+ h.get('dynamic-proxy-url').value='socks5h://draft:secret@proxy.test:1080';h.get('harvest-dial-proxy-mode').value='direct';
+ await h.get('proxy-test').click();await settle();
+ assert.equal(h.calls.save.length,0);assert.equal(h.calls.actions.length,1);
+ assert.deepEqual(h.calls.actions[0],{kind:'proxy_test',proxy:{dynamic_proxy_url:'socks5h://draft:secret@proxy.test:1080',harvest_dial_proxy_mode:'direct',harvest_dial_proxy_url:'',harvest_dial_proxy_id:0}});
+ h.runtime.stop();
+});
+test('account progress is inline, preserves form edits and disables duplicate harvest',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],tickets:[{account_id:7,model:'gpt-test',state:'harvesting',attempts:2}]});await h.runtime.refreshStatus();
+ const row=h.get('accounts-body').children[0];function text(n){return String(n.textContent)+n.children.map(text).join('');}
+ assert.match(text(row.children[2]),/正在获取/);assert.match(text(row.children[2]),/第 2 次/);
+ assert.equal(row.children[3].children[0].disabled,true);assert.equal(row.children[3].children[0].textContent,'正在查找…');
+ h.runtime.stop();
+});
+
+test('proxy results are prominent and manual connectivity failures stay on the account',async()=>{
+ const h=uiHarness();await settle();
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],tickets:[{account_id:7,state:'checking_proxy',last_error:'checking_business_proxy'}],manual_test:{id:'net',kind:'proxy_test',running:true}});await h.runtime.refreshStatus();
+ assert.equal(h.get('proxy-test-status').className,'proxy-result pending');
+ const row=h.get('accounts-body').children[0];assert.equal(row.children[3].children[0].disabled,true);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],tickets:[{account_id:7,state:'cooldown',last_error:'business_connectivity_failed'}],manual_test:{id:'net',kind:'proxy_test',running:false,complete:false,error:'出口 IP 检测失败'}});await h.runtime.refreshStatus();
+ assert.equal(h.get('proxy-test-status').className,'proxy-result error');assert.match(h.get('proxy-test-status').textContent,/测试失败/);
+ function text(n){return String(n.textContent)+n.children.map(text).join('');}assert.match(text(row.children[2]),/本次查找已停止/);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'net2',kind:'proxy_test',running:false,complete:true,exit_ip:'203.0.113.8',duration_ms:500}});await h.runtime.refreshStatus();
+ assert.equal(h.get('proxy-test-status').className,'proxy-result success');h.runtime.stop();
+});
+
+test('single row and bulk buttons send different explicitly scoped actions',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7,12],tickets:[{account_id:7,state:'cooldown'}]});await h.runtime.refreshStatus();
+ await h.get('accounts-body').children[0].children[3].children[0].click();await settle();
+ assert.deepEqual(h.calls.actions,[{kind:'refresh',account_id:7}]);
+ await h.get('refresh-all').click();await settle();
+ assert.deepEqual(h.calls.actions[1],{kind:'refresh_all'});assert.equal(h.calls.save.length,0);
+ h.runtime.stop();
+});
+test('countries and action origin are shown for the observed IP in status and logs',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],tickets:[{account_id:7,state:'harvesting',trigger:'manual',exit_ip:'203.0.113.8',country_code:'JP'}],events:[{account_id:7,phase:'harvest',trigger:'manual_all',result:'model_matched',exit_ip:'203.0.113.9',country_code:'DE',attempt:2}],manual_test:{id:'country',kind:'proxy_test',complete:true,exit_ip:'203.0.113.10',country_code:'US',duration_ms:800}});
+ await h.runtime.refreshStatus();function text(n){return String(n.textContent)+n.children.map(text).join('');}
+ assert.match(text(h.get('accounts-body')),/单账号手动/);assert.match(text(h.get('accounts-body')),/日本/);
+ assert.match(text(h.get('activity-body')),/全部手动/);assert.match(text(h.get('activity-body')),/德国/);assert.match(h.get('proxy-test-status').textContent,/美国/);
+ assert.equal(ui.countryLabel('<script>'),'国家未知');assert.equal(ui.countryLabel(''),'国家未知');h.runtime.stop();
+});
+
+async function startProxyAutosave(h) {
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7]});await h.runtime.refreshStatus();
+ h.get('dynamic-proxy-url').value='socks5h://draft:secret@proxy.test:1080';h.get('harvest-dial-proxy-mode').value='managed';h.get('harvest-dial-proxy-id').value='3';
+ await h.get('proxy-test').click();
+}
+test('successful proxy test auto-saves only tested proxy fields against latest persisted config once',async()=>{
+ const h=uiHarness();await settle();
+ h.get('ttl-minutes').value='30';
+ const draftModel=h.get('accounts-body').children[0].children[0].children[1].children[2];draftModel.value='gpt-draft';await draftModel.fire('input');
+ await startProxyAutosave(h);assert.equal(h.calls.save.length,0);assert.equal(h.get('config-fields').disabled,true);
+ const latest=configured({auto_harvest:false,cooldown_seconds:600});latest.accounts[0].plan='team';h.setConfig(latest);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'proxy-action-1',kind:'proxy_test',complete:true,running:false,exit_ip:'203.0.113.8',country_code:'JP'}});
+ await h.runtime.refreshStatus();await h.runtime.refreshStatus();
+ assert.equal(h.calls.save.length,1);const saved=h.calls.save[0];
+ assert.equal(saved.dynamic_proxy_url,'socks5h://draft:secret@proxy.test:1080');assert.equal(saved.harvest_dial_proxy_id,3);
+ assert.equal(saved.accounts[0].enabled,false);assert.equal(saved.accounts[0].plan,'team');assert.equal(saved.auto_harvest,false);assert.equal(saved.cooldown_seconds,600);assert.equal(saved.ttl_minutes,60);
+ assert.equal(h.get('ttl-minutes').value,'30');assert.equal(draftModel.value,'gpt-draft');assert.equal(h.get('config-fields').disabled,false);
+ assert.match(h.get('proxy-test-status').textContent,/已自动保存并生效/);h.runtime.stop();
+});
+test('failed or unrelated proxy results never auto-save configuration',async()=>{
+ const h=uiHarness();await settle();await startProxyAutosave(h);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'unrelated',kind:'proxy_test',complete:true,exit_ip:'203.0.113.8'}});await h.runtime.refreshStatus();assert.equal(h.calls.save.length,0);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'proxy-action-1',kind:'proxy_test',complete:false,error:'失败'}});await h.runtime.refreshStatus();
+ assert.equal(h.calls.save.length,0);assert.equal(h.get('config-fields').disabled,false);assert.match(h.get('proxy-test-status').textContent,/保留原配置/);h.runtime.stop();
+});
+
+test('proxy success distinguishes retained, expired and legacy sessions from account authorization',async()=>{
+ const h=uiHarness();await settle();await startProxyAutosave(h);
+ const status={host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'proxy-action-1',kind:'proxy_test',complete:true,running:false,exit_ip:'203.0.113.8',proxy_session_expires_at:new Date(Date.now()+30000).toISOString()}};
+ h.setStatus(status);await h.runtime.refreshStatus();
+ assert.match(h.get('proxy-test-status').textContent,/首次手动查找优先沿用/);
+ assert.match(h.get('proxy-test-status').textContent,/账号授权和上游可用性需另行验证/);
+ status.manual_test.proxy_session_expires_at=new Date(Date.now()-1000).toISOString();h.setStatus(status);await h.runtime.refreshStatus();
+ assert.match(h.get('proxy-test-status').textContent,/已过期/);
+ assert.doesNotMatch(h.get('proxy-test-status').textContent,/优先沿用/);
+ delete status.manual_test.proxy_session_expires_at;h.setStatus(status);await h.runtime.refreshStatus();
+ assert.match(h.get('proxy-test-status').textContent,/仅本次出口检测通过/);
+ assert.equal(h.calls.save.length,1);h.runtime.stop();
+});
+
+test('attempt log preserves sampled session source and separates 401 from exit failure',async()=>{
+ const h=uiHarness();await settle();
+ h.setStatus({host_ready:true,account_ids:[7],tickets:[{account_id:7,state:'cooldown',last_error:'upstream_unauthorized'}],events:[
+ {round_id:'r',account_id:7,attempt:1,phase:'harvest',result:'started',reused_proxy_session:true},
+ {round_id:'r',account_id:7,attempt:1,phase:'connectivity',route:'dynamic',result:'connectivity_ok',exit_ip:'203.0.113.8'},
+ {round_id:'r',account_id:7,attempt:1,phase:'harvest',result:'upstream_rejected',http_status:401}
+ ]});await h.runtime.refreshStatus();
+ function text(n){return String(n.textContent)+n.children.map(text).join('');}
+ assert.match(text(h.get('activity-body')),/沿用上方测通的会话/);
+ assert.match(text(h.get('activity-body')),/账号授权被拒绝/);
+ assert.match(text(h.get('accounts-body')),/重新授权此账号/);
+ assert.doesNotMatch(ui.errorLabel('dynamic_connectivity_failed'),/请先在上方测试/);
+ assert.match(ui.errorLabel('dynamic_connectivity_failed'),/自动换出口/);
+ h.setStatus({host_ready:true,account_ids:[7],tickets:[{account_id:7,state:'cooldown',last_error:'model_mismatch'}]});await h.runtime.refreshStatus();
+ assert.match(text(h.get('accounts-body')),/模型仍被路由/);assert.doesNotMatch(text(h.get('accounts-body')),/正在重新获取票据/);
+ h.runtime.stop();
+});
+test('proxy save failure is visible and does not claim the tested proxy is active',async()=>{
+ const h=uiHarness();await settle();await startProxyAutosave(h);h.bridge.save=async()=>{throw Error('save failed');};
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'proxy-action-1',kind:'proxy_test',complete:true,exit_ip:'203.0.113.8'}});await h.runtime.refreshStatus();
+ assert.equal(h.get('proxy-test-status').className,'proxy-result error');assert.match(h.get('proxy-test-status').textContent,/未能确认保存成功/);assert.equal(h.get('config-fields').disabled,false);h.runtime.stop();
+});
+test('per-attempt rows keep IP and country on final failure and separate rounds',()=>{
+ const events=[{round_id:'a',account_id:7,model:'gpt-test',attempt:1,phase:'harvest',result:'started'},
+ {round_id:'a',account_id:7,model:'gpt-test',attempt:1,phase:'harvest',result:'ip_observed',exit_ip:'203.0.113.8',country_code:'JP'},
+ {round_id:'a',account_id:7,model:'gpt-test',attempt:1,phase:'harvest',result:'model_mismatch',actual_model:'gpt-other'},
+ {round_id:'b',account_id:7,model:'gpt-test',attempt:1,phase:'harvest',result:'ip_observed',exit_ip:'203.0.113.9',country_code:'DE'}];
+ const rows=ui.attemptRows(events);assert.equal(rows.length,2);assert.equal(rows[0].result,'model_mismatch');assert.equal(rows[0].exit_ip,'203.0.113.8');assert.equal(rows[0].country_code,'JP');assert.equal(rows[1].country_code,'DE');
+});
+
+test('business front option defaults off and saves explicitly without changing proxy draft autosave',async()=>{
+ const h=uiHarness();await settle();assert.equal(h.get('business-use-front').checked,false);
+ h.get('business-use-front').checked=true;await h.get('save-config').click();
+ assert.equal(h.calls.save.at(-1).business_use_front,true);
+ assert.throws(()=>ui.validateConfig(configured({business_use_front:'true'})),/业务前置代理/);
+});
+
+test('failed instant account save restores switch and shows error on its row',async()=>{
+ const h=uiHarness();await settle();h.bridge.save=async()=>{throw Error('服务暂不可用');};
+ const row=h.get('accounts-body').children[0],check=row.children[1].children[0];check.checked=true;await check.fire('change');
+ assert.equal(check.checked,false);assert.equal(h.get('config-fields').disabled,false);
+ function text(n){return String(n.textContent)+n.children.map(text).join('');}assert.match(text(row.children[2]),/服务暂不可用/);h.runtime.stop();
+});
+test('manual submission locks inputs while status is stale, shows inline rejection and prevents duplicate clicks',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7]});await h.runtime.refreshStatus();
+ h.get('manual-model').value='gpt-test';h.get('manual-prompt').value='OK';
+ await h.get('manual-test').click();assert.equal(h.calls.actions.length,1);assert.equal(h.get('manual-test').disabled,true);assert.equal(h.get('manual-account').disabled,true);assert.match(h.get('manual-result-title').textContent,/提交/);
+ await h.get('manual-test').click();assert.equal(h.calls.actions.length,1);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'proxy-action-1',kind:'test',account_id:7,running:true}});await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-cancel').hidden,false);assert.equal(h.get('manual-cancel').disabled,false);
+ h.setStatus({host_ready:true,actions_ready:true,account_ids:[7],manual_test:{id:'proxy-action-1',kind:'test',account_id:7,running:false,error:'测试已取消'}});await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-cancel').hidden,true);assert.equal(h.get('manual-account').disabled,false);assert.equal(h.get('manual-result-title').textContent,'测试已停止');
+ h.bridge.action=async()=>({result:{accepted:false,message:'账号不可用'}});await h.get('manual-test').click();
+ assert.equal(h.get('manual-result-title').textContent,'未能开始测试');assert.match(h.get('manual-status').textContent,/账号不可用/);assert.equal(h.get('manual-test').disabled,false);await h.runtime.refreshStatus();assert.equal(h.get('manual-result-title').textContent,'未能开始测试');h.runtime.stop();
+});
+test('test result follows selected account and only HTML responses expose preview',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7,12],manual_test:{id:'result',kind:'test',account_id:7,complete:true,matches:true,text:'OK'}});await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-response').hidden,false);assert.equal(h.get('preview-html').hidden,true);
+ h.get('manual-account').value='12';await h.get('manual-account').fire('change');await h.runtime.refreshStatus();
+ assert.equal(h.get('manual-response').hidden,true);assert.match(h.get('manual-status').textContent,/ID 12/);assert.equal(h.calls.actions.length,0);
+ h.get('manual-prompt').value='custom';await h.get('quick-prompt').click();assert.equal(h.get('manual-prompt').value,'只回复 OK');h.runtime.stop();
+});
+test('proxy status failures eventually unlock form without saving unconfirmed config',async()=>{
+ const h=uiHarness();await settle();await startProxyAutosave(h);assert.equal(h.get('config-fields').disabled,true);
+ const now=Date.now;Date.now=()=>now()+60000;h.bridge.status=async()=>{throw Error('disconnected');};
+ try{await h.runtime.refreshStatus();assert.equal(h.get('config-fields').disabled,false);assert.equal(h.calls.save.length,0);assert.match(h.get('proxy-test-status').textContent,/未自动保存/);}finally{Date.now=now;h.runtime.stop();}
+});
+test('log filter shows only selected account and changing it never starts work',async()=>{
+ const h=uiHarness();await settle();h.setStatus({host_ready:true,actions_ready:true,account_ids:[7,12],events:[{account_id:7,phase:'harvest',attempt:1,result:'model_mismatch'},{account_id:12,phase:'harvest',attempt:1,result:'model_matched'}]});await h.runtime.refreshStatus();
+ assert.equal(h.get('activity-body').children.length,2);h.get('activity-account').value='12';await h.get('activity-account').fire('change');assert.equal(h.get('activity-body').children.length,1);assert.equal(h.calls.actions.length,0);h.runtime.stop();
 });

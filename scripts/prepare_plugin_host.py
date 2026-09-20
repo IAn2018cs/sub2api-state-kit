@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a separate, pinned Sub2API 0.2.7 checkout with the optional resource RPCs."""
+"""Prepare a separate, pinned Sub2API 0.2.7 checkout with the optional resource and manual-action RPCs."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -21,7 +21,7 @@ def main():
     subprocess.run(['git', '-C', str(output), 'checkout', '--detach', BASE], check=True)
     subprocess.run(['git', '-C', str(output), 'apply', '--check', str(patch)], check=True)
     subprocess.run(['git', '-C', str(output), 'apply', str(patch)], check=True)
-    print('Prepared optional resource-directory host:', output)
+    print('Prepared resource-directory and manual-action host:', output)
     print('No services started or configuration/data copied. See docs/plugin-host-directory.md.')
 
 if __name__ == '__main__':

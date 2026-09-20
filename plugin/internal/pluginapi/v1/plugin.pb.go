@@ -2048,11 +2048,12 @@ func (x *ProxySummary) GetPort() int32 {
 }
 
 type ListResourcesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Accounts      []*AccountSummary      `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
-	Proxies       []*ProxySummary        `protobuf:"bytes,2,rep,name=proxies,proto3" json:"proxies,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Accounts         []*AccountSummary      `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	Proxies          []*ProxySummary        `protobuf:"bytes,2,rep,name=proxies,proto3" json:"proxies,omitempty"`
+	ActionsSupported bool                   `protobuf:"varint,3,opt,name=actions_supported,json=actionsSupported,proto3" json:"actions_supported,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ListResourcesResponse) Reset() {
@@ -2097,6 +2098,13 @@ func (x *ListResourcesResponse) GetProxies() []*ProxySummary {
 		return x.Proxies
 	}
 	return nil
+}
+
+func (x *ListResourcesResponse) GetActionsSupported() bool {
+	if x != nil {
+		return x.ActionsSupported
+	}
+	return false
 }
 
 type ResolveProxyRequest struct {
@@ -2191,6 +2199,102 @@ func (x *ResolveProxyResponse) GetFound() bool {
 func (x *ResolveProxyResponse) GetProxyUrl() string {
 	if x != nil {
 		return x.ProxyUrl
+	}
+	return ""
+}
+
+type RunActionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ActionJson    []byte                 `protobuf:"bytes,1,opt,name=action_json,json=actionJson,proto3" json:"action_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RunActionRequest) Reset() {
+	*x = RunActionRequest{}
+	mi := &file_plugin_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RunActionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunActionRequest) ProtoMessage() {}
+
+func (x *RunActionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunActionRequest.ProtoReflect.Descriptor instead.
+func (*RunActionRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *RunActionRequest) GetActionJson() []byte {
+	if x != nil {
+		return x.ActionJson
+	}
+	return nil
+}
+
+type RunActionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RunActionResponse) Reset() {
+	*x = RunActionResponse{}
+	mi := &file_plugin_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RunActionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunActionResponse) ProtoMessage() {}
+
+func (x *RunActionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunActionResponse.ProtoReflect.Descriptor instead.
+func (*RunActionResponse) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *RunActionResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *RunActionResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
 	}
 	return ""
 }
@@ -2350,16 +2454,24 @@ const file_plugin_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x12\n" +
 	"\x04host\x18\x04 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x05 \x01(\x05R\x04port\"\x91\x01\n" +
+	"\x04port\x18\x05 \x01(\x05R\x04port\"\xbe\x01\n" +
 	"\x15ListResourcesResponse\x12=\n" +
 	"\baccounts\x18\x01 \x03(\v2!.sub2api.plugin.v1.AccountSummaryR\baccounts\x129\n" +
-	"\aproxies\x18\x02 \x03(\v2\x1f.sub2api.plugin.v1.ProxySummaryR\aproxies\"0\n" +
+	"\aproxies\x18\x02 \x03(\v2\x1f.sub2api.plugin.v1.ProxySummaryR\aproxies\x12+\n" +
+	"\x11actions_supported\x18\x03 \x01(\bR\x10actionsSupported\"0\n" +
 	"\x13ResolveProxyRequest\x12\x19\n" +
 	"\bproxy_id\x18\x01 \x01(\x03R\aproxyId\"I\n" +
 	"\x14ResolveProxyResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1b\n" +
-	"\tproxy_url\x18\x02 \x01(\tR\bproxyUrl2\x95\x05\n" +
-	"\x0fTransportPlugin\x12P\n" +
+	"\tproxy_url\x18\x02 \x01(\tR\bproxyUrl\"3\n" +
+	"\x10RunActionRequest\x12\x1f\n" +
+	"\vaction_json\x18\x01 \x01(\fR\n" +
+	"actionJson\"I\n" +
+	"\x11RunActionResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage2\xed\x05\n" +
+	"\x0fTransportPlugin\x12V\n" +
+	"\tRunAction\x12#.sub2api.plugin.v1.RunActionRequest\x1a$.sub2api.plugin.v1.RunActionResponse\x12P\n" +
 	"\aGetInfo\x12!.sub2api.plugin.v1.GetInfoRequest\x1a\".sub2api.plugin.v1.GetInfoResponse\x12M\n" +
 	"\x06Health\x12 .sub2api.plugin.v1.HealthRequest\x1a!.sub2api.plugin.v1.HealthResponse\x12e\n" +
 	"\x0eValidateConfig\x12(.sub2api.plugin.v1.ValidateConfigRequest\x1a).sub2api.plugin.v1.ValidateConfigResponse\x12\\\n" +
@@ -2390,7 +2502,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 	return file_plugin_proto_rawDescData
 }
 
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_plugin_proto_goTypes = []any{
 	(*GetInfoRequest)(nil),                  // 0: sub2api.plugin.v1.GetInfoRequest
 	(*GetInfoResponse)(nil),                 // 1: sub2api.plugin.v1.GetInfoResponse
@@ -2429,55 +2541,59 @@ var file_plugin_proto_goTypes = []any{
 	(*ListResourcesResponse)(nil),           // 34: sub2api.plugin.v1.ListResourcesResponse
 	(*ResolveProxyRequest)(nil),             // 35: sub2api.plugin.v1.ResolveProxyRequest
 	(*ResolveProxyResponse)(nil),            // 36: sub2api.plugin.v1.ResolveProxyResponse
-	nil,                                     // 37: sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
-	nil,                                     // 38: sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
-	nil,                                     // 39: sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
+	(*RunActionRequest)(nil),                // 37: sub2api.plugin.v1.RunActionRequest
+	(*RunActionResponse)(nil),               // 38: sub2api.plugin.v1.RunActionResponse
+	nil,                                     // 39: sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
+	nil,                                     // 40: sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
+	nil,                                     // 41: sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
 }
 var file_plugin_proto_depIdxs = []int32{
-	37, // 0: sub2api.plugin.v1.ForwardRequestStart.headers:type_name -> sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
+	39, // 0: sub2api.plugin.v1.ForwardRequestStart.headers:type_name -> sub2api.plugin.v1.ForwardRequestStart.HeadersEntry
 	11, // 1: sub2api.plugin.v1.ForwardRequest.start:type_name -> sub2api.plugin.v1.ForwardRequestStart
-	38, // 2: sub2api.plugin.v1.ForwardResponseStart.headers:type_name -> sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
+	40, // 2: sub2api.plugin.v1.ForwardResponseStart.headers:type_name -> sub2api.plugin.v1.ForwardResponseStart.HeadersEntry
 	13, // 3: sub2api.plugin.v1.ForwardResponse.start:type_name -> sub2api.plugin.v1.ForwardResponseStart
 	14, // 4: sub2api.plugin.v1.ForwardResponse.end:type_name -> sub2api.plugin.v1.ForwardResponseEnd
 	15, // 5: sub2api.plugin.v1.ForwardResponse.error:type_name -> sub2api.plugin.v1.ForwardResponseError
-	39, // 6: sub2api.plugin.v1.ResolveOutboundIdentityResponse.headers:type_name -> sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
+	41, // 6: sub2api.plugin.v1.ResolveOutboundIdentityResponse.headers:type_name -> sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry
 	32, // 7: sub2api.plugin.v1.ListResourcesResponse.accounts:type_name -> sub2api.plugin.v1.AccountSummary
 	33, // 8: sub2api.plugin.v1.ListResourcesResponse.proxies:type_name -> sub2api.plugin.v1.ProxySummary
 	10, // 9: sub2api.plugin.v1.ForwardRequestStart.HeadersEntry.value:type_name -> sub2api.plugin.v1.HeaderValues
 	10, // 10: sub2api.plugin.v1.ForwardResponseStart.HeadersEntry.value:type_name -> sub2api.plugin.v1.HeaderValues
 	10, // 11: sub2api.plugin.v1.ResolveOutboundIdentityResponse.HeadersEntry.value:type_name -> sub2api.plugin.v1.HeaderValues
-	0,  // 12: sub2api.plugin.v1.TransportPlugin.GetInfo:input_type -> sub2api.plugin.v1.GetInfoRequest
-	2,  // 13: sub2api.plugin.v1.TransportPlugin.Health:input_type -> sub2api.plugin.v1.HealthRequest
-	4,  // 14: sub2api.plugin.v1.TransportPlugin.ValidateConfig:input_type -> sub2api.plugin.v1.ValidateConfigRequest
-	6,  // 15: sub2api.plugin.v1.TransportPlugin.ApplyConfig:input_type -> sub2api.plugin.v1.ApplyConfigRequest
-	8,  // 16: sub2api.plugin.v1.TransportPlugin.TestConfig:input_type -> sub2api.plugin.v1.TestConfigRequest
-	12, // 17: sub2api.plugin.v1.TransportPlugin.Forward:input_type -> sub2api.plugin.v1.ForwardRequest
-	17, // 18: sub2api.plugin.v1.TransportPlugin.InitHostServices:input_type -> sub2api.plugin.v1.InitHostServicesRequest
-	19, // 19: sub2api.plugin.v1.HostService.KVGet:input_type -> sub2api.plugin.v1.KVGetRequest
-	21, // 20: sub2api.plugin.v1.HostService.KVSet:input_type -> sub2api.plugin.v1.KVSetRequest
-	23, // 21: sub2api.plugin.v1.HostService.KVDelete:input_type -> sub2api.plugin.v1.KVDeleteRequest
-	25, // 22: sub2api.plugin.v1.HostService.KVList:input_type -> sub2api.plugin.v1.KVListRequest
-	31, // 23: sub2api.plugin.v1.HostService.ListResources:input_type -> sub2api.plugin.v1.ListResourcesRequest
-	35, // 24: sub2api.plugin.v1.HostService.ResolveProxy:input_type -> sub2api.plugin.v1.ResolveProxyRequest
-	27, // 25: sub2api.plugin.v1.HostService.ListAccounts:input_type -> sub2api.plugin.v1.ListAccountsRequest
-	29, // 26: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:input_type -> sub2api.plugin.v1.ResolveOutboundIdentityRequest
-	1,  // 27: sub2api.plugin.v1.TransportPlugin.GetInfo:output_type -> sub2api.plugin.v1.GetInfoResponse
-	3,  // 28: sub2api.plugin.v1.TransportPlugin.Health:output_type -> sub2api.plugin.v1.HealthResponse
-	5,  // 29: sub2api.plugin.v1.TransportPlugin.ValidateConfig:output_type -> sub2api.plugin.v1.ValidateConfigResponse
-	7,  // 30: sub2api.plugin.v1.TransportPlugin.ApplyConfig:output_type -> sub2api.plugin.v1.ApplyConfigResponse
-	9,  // 31: sub2api.plugin.v1.TransportPlugin.TestConfig:output_type -> sub2api.plugin.v1.TestConfigResponse
-	16, // 32: sub2api.plugin.v1.TransportPlugin.Forward:output_type -> sub2api.plugin.v1.ForwardResponse
-	18, // 33: sub2api.plugin.v1.TransportPlugin.InitHostServices:output_type -> sub2api.plugin.v1.InitHostServicesResponse
-	20, // 34: sub2api.plugin.v1.HostService.KVGet:output_type -> sub2api.plugin.v1.KVGetResponse
-	22, // 35: sub2api.plugin.v1.HostService.KVSet:output_type -> sub2api.plugin.v1.KVSetResponse
-	24, // 36: sub2api.plugin.v1.HostService.KVDelete:output_type -> sub2api.plugin.v1.KVDeleteResponse
-	26, // 37: sub2api.plugin.v1.HostService.KVList:output_type -> sub2api.plugin.v1.KVListResponse
-	34, // 38: sub2api.plugin.v1.HostService.ListResources:output_type -> sub2api.plugin.v1.ListResourcesResponse
-	36, // 39: sub2api.plugin.v1.HostService.ResolveProxy:output_type -> sub2api.plugin.v1.ResolveProxyResponse
-	28, // 40: sub2api.plugin.v1.HostService.ListAccounts:output_type -> sub2api.plugin.v1.ListAccountsResponse
-	30, // 41: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:output_type -> sub2api.plugin.v1.ResolveOutboundIdentityResponse
-	27, // [27:42] is the sub-list for method output_type
-	12, // [12:27] is the sub-list for method input_type
+	37, // 12: sub2api.plugin.v1.TransportPlugin.RunAction:input_type -> sub2api.plugin.v1.RunActionRequest
+	0,  // 13: sub2api.plugin.v1.TransportPlugin.GetInfo:input_type -> sub2api.plugin.v1.GetInfoRequest
+	2,  // 14: sub2api.plugin.v1.TransportPlugin.Health:input_type -> sub2api.plugin.v1.HealthRequest
+	4,  // 15: sub2api.plugin.v1.TransportPlugin.ValidateConfig:input_type -> sub2api.plugin.v1.ValidateConfigRequest
+	6,  // 16: sub2api.plugin.v1.TransportPlugin.ApplyConfig:input_type -> sub2api.plugin.v1.ApplyConfigRequest
+	8,  // 17: sub2api.plugin.v1.TransportPlugin.TestConfig:input_type -> sub2api.plugin.v1.TestConfigRequest
+	12, // 18: sub2api.plugin.v1.TransportPlugin.Forward:input_type -> sub2api.plugin.v1.ForwardRequest
+	17, // 19: sub2api.plugin.v1.TransportPlugin.InitHostServices:input_type -> sub2api.plugin.v1.InitHostServicesRequest
+	19, // 20: sub2api.plugin.v1.HostService.KVGet:input_type -> sub2api.plugin.v1.KVGetRequest
+	21, // 21: sub2api.plugin.v1.HostService.KVSet:input_type -> sub2api.plugin.v1.KVSetRequest
+	23, // 22: sub2api.plugin.v1.HostService.KVDelete:input_type -> sub2api.plugin.v1.KVDeleteRequest
+	25, // 23: sub2api.plugin.v1.HostService.KVList:input_type -> sub2api.plugin.v1.KVListRequest
+	31, // 24: sub2api.plugin.v1.HostService.ListResources:input_type -> sub2api.plugin.v1.ListResourcesRequest
+	35, // 25: sub2api.plugin.v1.HostService.ResolveProxy:input_type -> sub2api.plugin.v1.ResolveProxyRequest
+	27, // 26: sub2api.plugin.v1.HostService.ListAccounts:input_type -> sub2api.plugin.v1.ListAccountsRequest
+	29, // 27: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:input_type -> sub2api.plugin.v1.ResolveOutboundIdentityRequest
+	38, // 28: sub2api.plugin.v1.TransportPlugin.RunAction:output_type -> sub2api.plugin.v1.RunActionResponse
+	1,  // 29: sub2api.plugin.v1.TransportPlugin.GetInfo:output_type -> sub2api.plugin.v1.GetInfoResponse
+	3,  // 30: sub2api.plugin.v1.TransportPlugin.Health:output_type -> sub2api.plugin.v1.HealthResponse
+	5,  // 31: sub2api.plugin.v1.TransportPlugin.ValidateConfig:output_type -> sub2api.plugin.v1.ValidateConfigResponse
+	7,  // 32: sub2api.plugin.v1.TransportPlugin.ApplyConfig:output_type -> sub2api.plugin.v1.ApplyConfigResponse
+	9,  // 33: sub2api.plugin.v1.TransportPlugin.TestConfig:output_type -> sub2api.plugin.v1.TestConfigResponse
+	16, // 34: sub2api.plugin.v1.TransportPlugin.Forward:output_type -> sub2api.plugin.v1.ForwardResponse
+	18, // 35: sub2api.plugin.v1.TransportPlugin.InitHostServices:output_type -> sub2api.plugin.v1.InitHostServicesResponse
+	20, // 36: sub2api.plugin.v1.HostService.KVGet:output_type -> sub2api.plugin.v1.KVGetResponse
+	22, // 37: sub2api.plugin.v1.HostService.KVSet:output_type -> sub2api.plugin.v1.KVSetResponse
+	24, // 38: sub2api.plugin.v1.HostService.KVDelete:output_type -> sub2api.plugin.v1.KVDeleteResponse
+	26, // 39: sub2api.plugin.v1.HostService.KVList:output_type -> sub2api.plugin.v1.KVListResponse
+	34, // 40: sub2api.plugin.v1.HostService.ListResources:output_type -> sub2api.plugin.v1.ListResourcesResponse
+	36, // 41: sub2api.plugin.v1.HostService.ResolveProxy:output_type -> sub2api.plugin.v1.ResolveProxyResponse
+	28, // 42: sub2api.plugin.v1.HostService.ListAccounts:output_type -> sub2api.plugin.v1.ListAccountsResponse
+	30, // 43: sub2api.plugin.v1.HostService.ResolveOutboundIdentity:output_type -> sub2api.plugin.v1.ResolveOutboundIdentityResponse
+	28, // [28:44] is the sub-list for method output_type
+	12, // [12:28] is the sub-list for method input_type
 	12, // [12:12] is the sub-list for extension type_name
 	12, // [12:12] is the sub-list for extension extendee
 	0,  // [0:12] is the sub-list for field type_name
@@ -2505,7 +2621,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   40,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

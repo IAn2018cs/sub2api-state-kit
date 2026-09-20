@@ -84,6 +84,7 @@ func completed(w http.ResponseWriter, model string) {
 }
 func testConfig(proxy string, ids ...int64) Config {
 	c := DefaultConfig()
+	c.AllowWithoutTicket = false
 	c.Enabled = true
 	c.DynamicProxyURL = proxy
 	c.MaxAttempts = 1

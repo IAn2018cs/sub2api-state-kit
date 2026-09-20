@@ -1,6 +1,6 @@
-# 可选宿主适配：账号名称与 IP 管理
+# v0.3.3 宿主适配：账号目录、代理选择与手动测试
 
-STATE Kit v0.3.2 的基础采集、手动前置代理、守护和日志继续支持原版 Sub2API 0.2.7。原版 HostService 只返回账号 ID，不提供名称或代理目录。要在插件配置页显示账号名称、按名字选已有代理，需要本页的**可选宿主改动**；仅上传插件无法增加宿主接口。
+STATE Kit v0.3.3 的基础采集、手动前置代理、守护和日志继续支持原版 Sub2API 0.2.7。原版 HostService 只返回账号 ID，不提供名称或代理目录。要在插件配置页显示账号名称、按名字选已有代理，或使用手动查找、代理测试、模型测试和 HTML 预览，需要本页的**宿主改动**；仅上传插件无法增加宿主接口。
 
 ## 修改范围
 
@@ -8,7 +8,7 @@ STATE Kit v0.3.2 的基础采集、手动前置代理、守护和日志继续支
 
 - 增加两个可选 HostService RPC：`ListResources` 返回账号 ID / 名称和可用代理的 ID / 名称 / 协议 / 地址；`ResolveProxy` 仅向插件后端按 ID 返回当前认证 URL。
 - 沿用原 OpenAI OAuth 传输插件的能力限制，账号名称范围与原目录一致；状态 JSON、下拉列表不包含代理用户名、密码、Token 或票据。
-- 不新增数据库字段、不迁移数据、不修改账号业务代理、调度或宿主页面。
+- 不新增数据库字段、不迁移数据、不修改账号业务代理或调度；手动动作扩展会更新宿主插件页面的 Bridge 和预览权限。
 - 目录每 30 秒刷新；代理在每次采集前重新解析。禁用、过期、删除或解析失败时停止该轮并进入冷却，不会使用直连兜底。
 - 代理 ID 参与票据配置绑定；名称改动不使票据失效。代理管理中的认证更新影响后续采集，已有通过业务出口复验的票据可继续使用至原有效期。
 - 老宿主返回 Unimplemented 时，插件保留直连和手动填写，禁用代理目录选项。已保存的目录选择不会因临时目录故障被偷偷改为直连。
@@ -35,7 +35,7 @@ cd ../backend
 # 前端构建脚本按上游规则复制 dist；确认 internal/web/dist/index.html 存在。
 go test ./internal/service -run 'TestPlugin(Resource|Host)|TestBuildHostServices' -count=1
 CGO_ENABLED=0 go build -tags embed -trimpath \
-  -ldflags='-s -w -X main.Version=0.2.7+statekit-directory -X main.BuildType=release' \
+  -ldflags='-s -w -X main.Version=0.2.7+statekit-actions -X main.BuildType=release' \
   -o sub2api ./cmd/server
 ```
 
@@ -53,3 +53,10 @@ CGO_ENABLED=0 go build -tags embed -trimpath \
 4. 保存，等待采集及业务出口复验成功，查看运行日志后再调用自己的 API Key。
 
 要回退，先把前置代理改为手动或直连并保存，再恢复旧宿主程序；否则老宿主无法解析保存的代理 ID。该适配没有数据库迁移。
+
+
+## v0.3.3 手动操作扩展
+
+当前补丁在上述资源目录基础上增加 `TransportPlugin.RunAction`、管理员 `POST /admin/plugins/:id/actions`、宿主 UI Bridge 的 `plugin.action`。动作接口沿用管理员与 step-up 校验，仅调用已运行插件，不启动临时进程；被动状态查询不会触发采集或测试。插件能力标记用于区分新版宿主与仅支持目录的旧适配。
+
+宿主前端也需重新构建。HTML 预览通过受限的嵌套沙箱呈现；宿主 CSP 允许 about: 子框架，继续禁止外部连接、表单及顶层导航。每次手动测试可停止，重复动作 ID 不会重复发送模型请求。

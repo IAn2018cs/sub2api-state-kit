@@ -5,6 +5,7 @@ package sub2api.plugin.v1;
 option go_package = "github.com/Wei-Shaw/sub2api/pkg/pluginapi/v1;pluginv1";
 
 service TransportPlugin {
+  rpc RunAction(RunActionRequest) returns (RunActionResponse);
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse);
@@ -229,6 +230,9 @@ message ResolveOutboundIdentityResponse {
 message ListResourcesRequest {}
 message AccountSummary { int64 id = 1; string name = 2; }
 message ProxySummary { int64 id = 1; string name = 2; string protocol = 3; string host = 4; int32 port = 5; }
-message ListResourcesResponse { repeated AccountSummary accounts = 1; repeated ProxySummary proxies = 2; }
+message ListResourcesResponse { repeated AccountSummary accounts = 1; repeated ProxySummary proxies = 2; bool actions_supported = 3; }
 message ResolveProxyRequest { int64 proxy_id = 1; }
 message ResolveProxyResponse { bool found = 1; string proxy_url = 2; }
+
+message RunActionRequest { bytes action_json = 1; }
+message RunActionResponse { bool accepted = 1; string message = 2; }

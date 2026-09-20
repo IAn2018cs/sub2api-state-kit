@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,14 @@ import (
 )
 
 type Engine struct {
+	countryURL    string
+	countryCache  map[string]countryEntry
+	countryClient *http.Client
+	forceRefresh  map[string]bool
+	manual        *manualResult
+	manualCancel  context.CancelFunc
+	testedProxy   *testedProxySession
+	actionIDs     []string
 	pluginv1.UnimplementedTransportPluginServer
 	mu               sync.Mutex
 	persistMu        sync.Mutex
@@ -52,6 +61,10 @@ type Engine struct {
 	activeAfter      time.Time
 }
 type jobRecord struct {
+	RoundID       string
+	Trigger       string
+	ExitIP        string
+	CountryCode   string
 	Attempts      int
 	LastError     string
 	CooldownUntil time.Time
@@ -73,6 +86,9 @@ type receipt struct {
 	Generation                             uint64
 }
 type statusTicket struct {
+	Trigger          string `json:"trigger"`
+	ExitIP           string `json:"exit_ip"`
+	CountryCode      string `json:"country_code"`
 	AccountID        int64  `json:"account_id"`
 	Model            string `json:"model"`
 	Plan             string `json:"plan"`
@@ -84,6 +100,8 @@ type statusTicket struct {
 	Attempts         int    `json:"attempts"`
 }
 type statusSnapshot struct {
+	ActionsReady   bool                       `json:"actions_ready"`
+	ManualTest     *manualResult              `json:"manual_test,omitempty"`
 	ResourcesReady bool                       `json:"resources_ready"`
 	Accounts       []*pluginv1.AccountSummary `json:"accounts"`
 	Proxies        []*pluginv1.ProxySummary   `json:"proxies"`
@@ -95,7 +113,11 @@ type statusSnapshot struct {
 }
 
 func New() *Engine {
-	return newEngine(nil, "https://chatgpt.com/backend-api/codex/responses", time.Second)
+	e := newEngine(nil, "https://chatgpt.com/backend-api/codex/responses", time.Second)
+	e.mu.Lock()
+	e.countryURL = "https://api.country.is/"
+	e.mu.Unlock()
+	return e
 }
 
 // Tests may inject a host and loopback probe endpoint; production configuration
@@ -103,7 +125,7 @@ func New() *Engine {
 func newEngine(host pluginv1.HostServiceClient, probeURL string, tick time.Duration) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	gc, gcancel := context.WithCancel(ctx)
-	e := &Engine{config: DefaultConfig(), ctx: ctx, cancel: cancel, generationCtx: gc, generationCancel: gcancel, wake: make(chan struct{}, 1), done: make(chan struct{}), host: host, hostReady: host != nil, directory: map[int64]bool{}, tickets: map[string]*ticket{}, records: map[string]*jobRecord{}, jobs: map[string]uint64{}, revoked: map[string]string{}, semaphore: make(chan struct{}, 4), clients: newClientPool(), probeURL: probeURL, tick: tick, warmup: 5 * time.Second}
+	e := &Engine{countryCache: map[string]countryEntry{}, countryClient: &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{}}, forceRefresh: map[string]bool{}, config: DefaultConfig(), ctx: ctx, cancel: cancel, generationCtx: gc, generationCancel: gcancel, wake: make(chan struct{}, 1), done: make(chan struct{}), host: host, hostReady: host != nil, directory: map[int64]bool{}, tickets: map[string]*ticket{}, records: map[string]*jobRecord{}, jobs: map[string]uint64{}, revoked: map[string]string{}, semaphore: make(chan struct{}, 4), clients: newClientPool(), probeURL: probeURL, tick: tick, warmup: 5 * time.Second}
 	e.exitIPURL = "https://api.ipify.org?format=json"
 	go e.loop()
 	return e
@@ -123,6 +145,7 @@ func (e *Engine) Close() {
 	<-e.done
 	e.wg.Wait()
 	e.clients.Close()
+	e.countryClient.CloseIdleConnections()
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -200,9 +223,13 @@ func (e *Engine) ApplyConfig(_ context.Context, r *pluginv1.ApplyConfigRequest) 
 	e.generationCancel()
 	e.generationCtx, e.generationCancel = context.WithCancel(e.ctx)
 	e.generation++
+	if e.testedProxy != nil && e.testedProxy.ConfigFingerprint != networkFingerprint(c) {
+		e.testedProxy = nil
+	}
 	e.config = c
 	e.activeAfter = time.Now().Add(e.warmup)
 	e.jobs = map[string]uint64{}
+	e.forceRefresh = map[string]bool{}
 	e.records = map[string]*jobRecord{}
 	// Remove memory entries no longer matching configuration. Persisted entries are
 	// keyed by fingerprint and expire naturally; switching configuration cannot use them.
@@ -304,6 +331,9 @@ func (e *Engine) ticketForRequest(_ context.Context, start *pluginv1.ForwardRequ
 		return nil, nil
 	}
 	if model == "" {
+		if e.config.AllowWithoutTicket {
+			return nil, nil
+		}
 		return nil, errors.New("configured account request has no inspectable model")
 	}
 	if !contains(a.Models, model) {
@@ -320,6 +350,9 @@ func (e *Engine) ticketForRequest(_ context.Context, start *pluginv1.ForwardRequ
 		return &receipt{State: t.State, Version: t.Version, Key: k, ConfigFingerprint: t.ConfigFingerprint, Generation: e.generation}, nil
 	}
 	e.notify()
+	if e.config.AllowWithoutTicket {
+		return nil, nil
+	}
 	return nil, errors.New("verified STATE unavailable; acquisition is running in the background")
 }
 func validTicket(t *ticket, c Config, a AccountConfig, model string, now time.Time) bool {
@@ -381,6 +414,11 @@ func (e *Engine) notify() {
 }
 func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 	s := statusSnapshot{HostReady: e.hostReady, AccountIDs: []int64{}, Tickets: []statusTicket{}, Message: "STATE disabled; requests use the account business proxy"}
+	s.ActionsReady = e.resources != nil && e.resources.ActionsSupported
+	if e.manual != nil {
+		copy := *e.manual
+		s.ManualTest = &copy
+	}
 	s.Events = append([]activityEvent{}, e.events...)
 	if e.resources != nil {
 		s.ResourcesReady = true
@@ -416,6 +454,9 @@ func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 			if r != nil {
 				row.Attempts = r.Attempts
 				row.LastError = r.LastError
+				row.Trigger = r.Trigger
+				row.ExitIP = r.ExitIP
+				row.CountryCode = r.CountryCode
 			}
 			switch {
 			case !e.config.Enabled || !a.Enabled:
@@ -425,6 +466,10 @@ func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 			case !e.directory[a.AccountID]:
 				row.State = "waiting_account"
 			case e.jobs[k] == e.generation && e.generation != 0:
+				if r != nil && strings.HasPrefix(r.LastError, "checking_") {
+					row.State = "checking_proxy"
+					break
+				}
 				if valid {
 					row.State = "renewing"
 				} else {
@@ -436,6 +481,8 @@ func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 				row.State = "cooldown"
 			case t != nil:
 				row.State = "expired"
+			case !e.config.AutoHarvest:
+				row.State = "manual_idle"
 			}
 			row.Status = row.State
 			s.Tickets = append(s.Tickets, row)

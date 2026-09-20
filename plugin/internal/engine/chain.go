@@ -15,10 +15,12 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// Only harvest callers opt into this extra hop. The HTTP transport still owns
-// the inner dynamic proxy (including SOCKS authentication and remote DNS).
+// The inner proxy retains its authentication, DNS and final egress.
 func harvestClient(dynamic, outer string) (*http.Client, error) {
-	client, err := freshProbeClient(dynamic)
+	return chainedHTTPClient(dynamic, outer, true)
+}
+func chainedHTTPClient(dynamic, outer string, fresh bool) (*http.Client, error) {
+	client, err := makeHTTPClient(dynamic, fresh)
 	if err != nil || outer == "" {
 		return client, err
 	}
@@ -47,7 +49,16 @@ func harvestClient(dynamic, outer string) (*http.Client, error) {
 			return nil, errors.New("harvest chain lacks cancellation")
 		}
 	}
-	client.Transport = &harvestTransport{base: client.Transport.(*http.Transport), dial: dial}
+	if fresh {
+		client.Transport = &harvestTransport{base: client.Transport.(*http.Transport), dial: dial}
+	} else {
+		// Business requests reuse connections; the outer hop is part of the pool key.
+		client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			return dial.DialContext(ctx, network, address)
+		}
+	}
 	return client, nil
 }
 

@@ -14,20 +14,21 @@
 
 ### 先看插件成功实测
 
-**同一账号、同一个固定业务出口：未注入 STATE 时返回 `gpt-5.6-luna`，注入有效 STATE 后返回 `gpt-6-astra`。** 以下是 2026-09-20 的本地插件历史记录，两个受测 Pro 账号均完成了这组对照；界面为当时版本，并非本次重新取票结果。
+以下两张是 **2026-09-20 在 v0.3.3 插件页面重新实测后直接截取的界面**：同一个 Pro 账号、同一个固定业务出口，提示词均为「只回复 OK」。本轮第 2 次动态尝试取得票据并通过业务出口复验。
 
-| 对照 | 请求模型 | 实际返回模型 | STATE 注入 | 响应 |
-| --- | --- | --- | --- | --- |
-| 无票据 | **gpt-6-astra** | **gpt-5.6-luna** | 否 | HTTP 200，完整结束 |
-| 有效票据 | **gpt-6-astra** | **gpt-6-astra** | 是 | HTTP 200，完整结束 |
+**使用有效 STATE：请求 `gpt-6-astra` → 实际返回 `gpt-6-astra`。** 页面显示「已注入 STATE」「模型匹配」，HTTP 200，响应完整结束。
 
-![插件成功实测：已注入 STATE，请求与返回模型一致](docs/images/plugin-success-routing-20260920.png)
+![本轮插件实测成功：已注入 STATE，请求与实际返回均为 gpt-6-astra](docs/images/plugin-live-with-state.png)
+
+**同账号的无票据对照：请求 `gpt-6-astra` → 实际返回 `gpt-5.6-luna`。** 页面显示「未注入 STATE」「模型不匹配」，HTTP 200，响应完整结束。
+
+![本轮插件实测对照：未注入 STATE，实际返回 gpt-5.6-luna](docs/images/plugin-live-without-state.png)
 
 下图是 2026-09-19 另一组插件测试中，注入 STATE、完整返回 `gpt-6-astra` 后生成的鹈鹕 HTML 预览。
 
 ![成功生成的鹈鹕骑自行车 HTML 预览](docs/images/plugin-success-pelican-20260919.png)
 
-截图仅裁取结果区域、添加日期并遮挡账号 / IP，没有修改模型名或回答。模型字段一致用于核对路由，不代表能力或长期有效性保证。[详细验证记录](docs/plugin-validation.md) · [旧版 Pro / Team 界面对照](#使用前后看图更直接)
+上方两张完整测试区截图仅隐藏账号与 IP，保留真实开关、请求 / 返回模型和回答；下方鹈鹕为注明日期的历史预览。模型字段一致用于核对路由，不代表能力或长期有效性保证。[详细验证记录](docs/plugin-validation.md) · [旧版 Pro / Team 界面对照](#使用前后看图更直接)
 
 ### 1. 单个账号开关，按需自动续期
 
